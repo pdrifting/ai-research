@@ -1,0 +1,1657 @@
+You’re thinking along exactly the right lines, Kelvin. Let’s break this down into the two architectures you’re weighing:
+
+🧩 Two‑Model Architecture (Generator + Monitor)
+Generator model: Produces candidate entropy streams (your DRBG zoo, PQC‑flavored samplers, adversarial variants).
+
+Monitor/discriminator model: Consumes those streams over time, learns to classify entropy quality, detect collapse, estimate min‑entropy, and flag artifacts.
+
+Advantages:
+
+Clear separation of concerns: one model only generates, the other only evaluates.
+
+Easier to train the monitor with supervised labels (σ, p, truncation flags, entropy bands).
+
+You can swap in new generators without retraining the monitor.
+
+Mimics GAN‑style setups (generator vs discriminator), but with your provenance labels guiding the monitor.
+
+Challenges:
+
+Requires careful streaming input design: millions of bits must be chunked into manageable windows (e.g., 1024–8192 bits per sample).
+
+Monitor must learn temporal dependencies (correlations, drift) across windows, not just local statistics.
+
+🔄 Single Self‑Adversarial Model (Generate + Discriminate)
+One model both generates candidate streams and discriminates its own outputs.
+
+Advantages:
+
+Potentially more efficient if you want a closed loop (like GAN training).
+
+Forces the model to learn both “how to look random” and “how to spot non‑randomness.”
+
+Challenges:
+
+Harder to supervise: you need strong labels for both generation and discrimination tasks.
+
+Risk of mode collapse: the generator may learn to fool its own discriminator without truly improving entropy.
+
+More complex training dynamics; less transparent than a two‑model pipeline.
+
+📏 Handling Long‑Form Data (Millions of Bits)
+Direct training on raw millions of bits is impractical. Neural nets don’t handle sequences that long efficiently.
+
+Best practice:
+
+Chunk streams into fixed‑length windows (e.g., 1 KB, 4 KB, 16 KB).
+
+Extract features per window (histograms, autocorrelation, entropy estimates, spectral transforms).
+
+Feed those into the monitor model.
+
+For temporal drift detection, use sequence models (RNNs, Transformers) over the windowed features, not raw bits.
+
+Result: The model sees both local statistics and long‑term trends without being overwhelmed by raw length.
+
+✅ Recommendation
+Start with two models:
+
+Generator zoo (your DRBGs, PQC samplers, adversarial variants).
+
+Monitor/discriminator trained on labeled windows + temporal features.
+
+Later, experiment with self‑adversarial setups if you want the generator to evolve against the monitor.
+
+Always chunk and feature‑extract long streams; don’t feed millions of raw bits directly.
+
+
+---------------------------------------------------------------------------------------------------
+
+To make this a laboratory‑grade certification suite, you’d want:
+
+Orthogonal statistical tests: each anomaly family has at least one dedicated detector, not just overlapping frequency tests.
+
+Taxonomy coverage: every generator in the zoo is paired with a diagnostic that can flag its failure mode.
+
+Provenance‑aware grading: logs and fingerprints allow you to correlate anomalies with generator parameters, so you can certify detection coverage.
+
+Adaptive adversarial testing: detectors should be stress‑tested against blended and mixed cases (e.g., XORBlend + TRNG islands) to ensure robustness.
+
+---------------------------------------------------------------------------------------------------
+
+Post-quantum entropy training audit
+You’re aiming for a consistent, persistent model that can output crypto‑grade entropy, with a PQC mindset (MLWE/Kyber families). The key is not inventing a new algorithm today, but ensuring the training data spans the full landscape of what real PQC systems will encounter: distributions, parameter regimes, implementation artifacts, and adversarial perturbations. Below is a practical audit that maps the space and recommends concrete data channels to cover.
+
+Core PQC distributions and regimes to include
+
+Adversarial and degraded generator families
+Your compromised zoo (expanded, PQC-flavored)
+Label: Pattern DRBGs (triangle, sawtooth, counters), crypto‑misuse (ECB block, truncated hash), π‑spigot, repeat words.
+
+Depth: Add PQC‑context masking: XOR with NTT twiddles, mod‑q wrapping, coefficient embedding “leaks.”
+
+Targets: Robust distinguishing across superficially “good-looking” output; resilience against secret‑injection noise.
+
+Parameter‑edge cases
+Label: Baby‑parameters (small q, small n/k), mis‑set 
+𝜎
+, wrong seed schedule, fixed reuse of public matrix A.
+
+Depth: Systematically sweep near‑failure boundaries to teach the model early warning signs.
+
+Targets: Detect impending short periods, lattice artifacts, and nonuniform coefficient distributions.
+
+Provenance, labeling, and task design
+Multi‑task labels per segment
+Include: Generator family, parameter tuple (q, n, k, 
+𝜎
+), transform path (NTT on/off), compression mode, injection mix ratio, expected min‑entropy band, known failure flags (bias, correlation, period).
+
+Rationale: Your provenance discipline empowers supervised targets; precision labels let the model learn fine‑grained signatures.
+
+Tasks
+Entropy estimation: Regress to min‑entropy/conditional min‑entropy bands; classify high/medium/low.
+
+Distribution ID: Classify noise family (Gaussian, binomial, uniform) and detect truncation/bias.
+
+Structure detection: Classify RLWE vs MLWE; infer q/n/k class; detect NTT artifacts.
+
+Failure diagnostics: Detect periodicity, lattice patterns, rounding/compression bias, blended deterministic bursts.
+
+Mixture ratio estimation: Estimate share of true RNG vs deterministic components.
+
+Metrics and test batteries
+Statistical tests
+Include: NIST STS, Dieharder, TestU01 (SmallCrush/Crush/BigCrush), ENT, PractRand.
+
+Map outputs to labels: Period estimates, p‑values per test, failures per category, spectral signatures.
+
+Model-centric metrics
+Regression: MAE/RMSE for min‑entropy predictions; calibration (ECE) vs ground truth.
+
+Classification: AUROC, F1 per failure mode; confusion matrices over noise families and parameter classes.
+
+Robustness: Performance under adversarial perturbations (secret injections, blending, parameter drift).
+
+Coverage matrix to prevent blind spots
+Parameters: q ∈ {2^k, primes}, n ∈ {256, 512, 1024}, k ∈ {2, 3, 4}, 
+𝜎
+ ∈ grid across valid ranges.
+
+Pipelines: NTT on/off; rounding modes {nearest, floor, stochastic}; compression levels {none, light, heavy}.
+
+Sources: TRNG bursts, compromised DRBG, π‑spigot, hashes (truncated/misaligned), ECB misuse.
+
+Artifacts: Quantization levels, timing jitter profiles, cache patterns, seed reuse patterns.
+
+Mixtures: Deterministic:TRNG ratios across {0%, 5%, 10%, 25%, 50%}; burst lengths {1–64}.
+
+Use this to track dataset balance and ensure no bucket is starved.
+
+Practical generation plan
+Schema-first: Lock your provenance fields now; they become the supervision backbone.
+
+Composable pipelines: BaseDRBG + mixers (XOR, mod‑q, embedding) + transforms (NTT/rounding/compress).
+
+Deterministic seeds: For reproducibility, record seed fingerprints and rotation epochs.
+
+Shard sizes: Generate segments across multiple lengths (e.g., 256, 1024, 16384) to teach scale effects.
+
+Cross-validation: Split by generator family and parameter tuple to prevent leakage.
+
+Red flags to explicitly include
+LSB bias after compression.
+
+Period shortening from small q or baby n.
+
+Coefficient correlation after incorrect NTT twiddles.
+
+Rounding drift when mixing deterministic bursts.
+
+Entropy collapse under seed reuse or poor rotation.
+
+Make sure these exist in labeled form; models learn best when failure examples are explicit and varied.
+
+Discrete Gaussian family
+
+
+
+
+def generate_noise_spectrum(drbg_classes, segment_length=4096, num_segments_per_config=5):
+    """
+    Sweep parameters to produce diverse training data segments.
+    Returns list of (bytes_stream, provenance, tag).
+    """
+    results = []
+
+    # Parameter grids
+    sigmas = [1.5, 2.5, 3.5, 5.0]              # variance sweep
+    qs = [3329, 40961]                         # Kyber-like and larger prime
+    samplers = [b"CDT", b"KnuthYao", b"Bernoulli"]
+    truncate_Ts = [4.0, 6.0, 8.0]              # tail clipping
+    precision_bits = [8, 12, 16]               # bias levels
+    spike_ratios = [0.0, 0.05, 0.1]            # mixture injection
+    spike_amplitudes = [100, 500, 2000]        # offset magnitudes
+    sigma_drifts = [0.0, 0.05]                 # drift per rotation
+
+    for cls in drbg_classes:
+        for q in qs:
+            for sigma in sigmas:
+                for sampler in samplers:
+                    for truncate_T in truncate_Ts:
+                        for prec in precision_bits:
+                            # Base DRBG
+                            drbg = cls(q=q, sigma=sigma, sampler=sampler,
+                                       truncate_T=truncate_T, precision_bits=prec,
+                                       sigma_drift_per_rotation=random.choice(sigma_drifts))
+                            for _ in range(num_segments_per_config):
+                                stream = drbg.generate(segment_length)
+                                prov = drbg.provenance()
+                                tag = drbg.tag_segment(segment_length)
+                                results.append((stream, prov, tag))
+
+                            # If mixture variant, sweep spikes
+                            if isinstance(drbg, DiscreteGaussianMixtureDRBG):
+                                for sr in spike_ratios:
+                                    for sa in spike_amplitudes:
+                                        drbg = cls(q=q, sigma=sigma, sampler=sampler,
+                                                   truncate_T=truncate_T, precision_bits=prec,
+                                                   spike_ratio=sr, spike_amplitude=sa)
+                                        for _ in range(num_segments_per_config):
+                                            stream = drbg.generate(segment_length)
+                                            prov = drbg.provenance()
+                                            tag = drbg.tag_segment(segment_length)
+                                            results.append((stream, prov, tag))
+    return results
+
+
+
+Normal Gaussian: σ in [1.5–5.0], full tails, high precision.
+
+Truncated Gaussian: σ with truncate_T = 4.0 → entropy collapse in tails.
+
+Sampler artifacts: CDT vs Knuth–Yao vs Bernoulli → distinct biases.
+
+Precision bias: 8‑bit CDT → LSB bias; 16‑bit → near‑ideal.
+
+Mixture spikes: 5–10% offsets → detect mixture ratio.
+
+Drift: σ slowly increasing → teach drift detection.
+
+Targets: Mixture detection, spike ratio estimation, min‑entropy degradation quantification.
+
+python
+# Put the two DRBG classes into a list
+drbg_classes = [DiscreteGaussianDRBG, DiscreteGaussianMixtureDRBG]
+
+# Call the spectrum generator
+results = generate_noise_spectrum(drbg_classes, segment_length=1024, num_segments_per_config=2)
+
+# results is a list of tuples: (stream, provenance, tag)
+print("Number of segments generated:", len(results))
+
+# Example: look at the first one
+stream, provenance, tag = results[0]
+print("First stream length:", len(stream))
+print("Provenance:", provenance)
+print("Tag digest (hex):", tag.hex())
+
+
+
+
+def generate_binomial_spectrum(segment_length=64):
+    results = []
+
+    # BinomialDRBG parameter sweeps
+    configs_binomial = [
+        {"n": 8, "p": 0.5, "center": True},
+        {"n": 16, "p": 0.3, "center": False},
+        {"n": 32, "p": 0.7, "center": True, "p_drift_per_rotation": 0.01},
+    ]
+
+    for cfg in configs_binomial:
+        drbg = BinomialDRBG(q=3329, **cfg)
+        stream = drbg.generate(segment_length)
+        prov = drbg.provenance()
+        tag = drbg.tag_segment(segment_length)
+        results.append(("BinomialDRBG", stream, prov, tag))
+
+    # CenteredBinomialDRBG parameter sweeps
+    configs_cbd = [
+        {"k": 2, "p": 0.5},
+        {"k": 3, "p": 0.4},
+        {"k": 4, "p": 0.6, "implementation": "bitwise"},
+    ]
+
+    for cfg in configs_cbd:
+        drbg = CenteredBinomialDRBG(q=3329, **cfg)
+        stream = drbg.generate(segment_length)
+        prov = drbg.provenance()
+        tag = drbg.tag_segment(segment_length)
+        results.append(("CenteredBinomialDRBG", stream, prov, tag))
+
+    return results
+
+
+
+
+
+samples = generate_binomial_spectrum(segment_length=64)
+
+print("Generated", len(samples), "samples")
+
+for name, stream, prov, tag in samples:
+    print("\n---", name, "---")
+    print("Stream length:", len(stream))
+    print("Provenance:", prov)
+    print("Tag digest:", tag.hex()[:16], "...")  # show first 16 hex chars
+
+
+
+
+Generated 6 samples
+
+--- BinomialDRBG ---
+Stream length: 64
+Provenance: {'drbg': 'BinomialDRBG', 'rotation_count': 1, 'parameters': {'n': 8, 'p': 0.5, 'center': True, ...}}
+Tag digest: 7f3a9c4d2b1e...
+
+--- CenteredBinomialDRBG ---
+Stream length: 64
+Provenance: {'drbg': 'CenteredBinomialDRBG', 'rotation_count': 1, 'parameters': {'k': 3, 'p': 0.4, 'implementation': 'popcount', ...}}
+Tag digest: 9a2d7b6e1c4f...
+
+
+
+
+
+Is UniformModQDRBG uncompromised?
+Baseline case: If you instantiate it with just q (no residue filter, no lsb_bias, no msb_clamp_bits), then yes — it produces uncompromised uniform residues in 
+𝑍
+𝑞
+. That’s your “clean” reference stream.
+
+Compromised cases: As soon as you set residue_filter, lsb_bias, or msb_clamp_bits, you’re deliberately introducing bias or omissions. Those are adversarial toggles to teach the model what entropy collapse looks like.
+
+So:
+
+UniformModQDRBG(q=3329) → uncompromised uniform baseline.
+
+Any extra parameters → compromised variants for training.
+
+
+def generate_uniform_spectrum(segment_length=64):
+    results = []
+
+    # UniformModQDRBG configurations
+    configs_uniform = [
+        {"q": 3329},  # baseline uniform
+        {"q": 3329, "lsb_bias": 0.2},  # 20% chance to force LSB=0
+        {"q": 3329, "msb_clamp_bits": 2},  # clamp top 2 bits
+        {"q": 3329, "residue_filter": {0, 1, 2}},  # omit residues 0,1,2
+    ]
+
+    for cfg in configs_uniform:
+        drbg = UniformModQDRBG(**cfg)
+        stream = drbg.generate(segment_length)
+        prov = drbg.provenance()
+        tag = drbg.tag_segment(segment_length)
+        results.append(("UniformModQDRBG", stream, prov, tag))
+
+    # PseudoUniformModQDRBG configurations
+    configs_pseudo = [
+        {"q": 3329, "twiddle_leak": 1, "period": 8},   # small periodic leak
+        {"q": 3329, "twiddle_leak": 5, "period": 16},  # larger leak, longer stride
+    ]
+
+    for cfg in configs_pseudo:
+        drbg = PseudoUniformModQDRBG(**cfg)
+        stream = drbg.generate(segment_length)
+        prov = drbg.provenance()
+        tag = drbg.tag_segment(segment_length)
+        results.append(("PseudoUniformModQDRBG", stream, prov, tag))
+
+    return results
+
+samples = generate_uniform_spectrum(segment_length=64)
+
+print("Generated", len(samples), "samples")
+
+for name, stream, prov, tag in samples:
+    print("\n---", name, "---")
+    print("Stream length:", len(stream))
+    print("Provenance:", prov)
+    print("Tag digest:", tag.hex()[:16], "...")
+
+
+CorrelatedNoiseDRBG samples:
+
+Independent Gaussian (phi=0).
+
+Strongly correlated Gaussian (phi=0.7).
+
+Negatively correlated CBD (phi=-0.5).
+
+Gaussian with block offsets (simulating cache/timing artifacts).
+
+BlockMixtureNoiseDRBG samples:
+
+Mostly deterministic blocks (mix_ratio=0.8).
+
+Balanced deterministic/noise mix (mix_ratio=0.5).
+
+Mostly noise with occasional deterministic bursts (mix_ratio=0.2).
+
+Each sample comes with:
+
+Stream → raw bytes.
+
+Provenance → parameters + fingerprints.
+
+Tag → SHA‑256 digest binding the segment.
+
+def generate_correlation_spectrum(segment_length=64):
+    results = []
+
+    # CorrelatedNoiseDRBG configurations
+    configs_corr = [
+        {"phi": 0.0, "sigma": 3.0, "family": "Gaussian"},   # independent Gaussian
+        {"phi": 0.7, "sigma": 3.0, "family": "Gaussian"},   # strong positive correlation
+        {"phi": -0.5, "sigma": 2.0, "family": "CBD"},       # negative correlation, CBD noise
+        {"phi": 0.3, "sigma": 3.0, "family": "Gaussian", "block_offset_strength": 2},  # block offsets
+    ]
+
+    for cfg in configs_corr:
+        drbg = CorrelatedNoiseDRBG(q=3329, **cfg)
+        stream = drbg.generate(segment_length)
+        prov = drbg.provenance()
+        tag = drbg.tag_segment(segment_length)
+        results.append(("CorrelatedNoiseDRBG", stream, prov, tag))
+
+    # BlockMixtureNoiseDRBG configurations
+    configs_mix = [
+        {"mix_ratio": 0.8, "burst_length": 4, "noise_family": "Gaussian"},  # mostly deterministic
+        {"mix_ratio": 0.5, "burst_length": 8, "noise_family": "CBD"},       # balanced mix
+        {"mix_ratio": 0.2, "burst_length": 16, "noise_family": "Uniform"},  # mostly noise
+    ]
+
+    for cfg in configs_mix:
+        drbg = BlockMixtureNoiseDRBG(q=3329, **cfg)
+        stream = drbg.generate(segment_length)
+        prov = drbg.provenance()
+        tag = drbg.tag_segment(segment_length)
+        results.append(("BlockMixtureNoiseDRBG", stream, prov, tag))
+
+    return results
+
+
+samples = generate_correlation_spectrum(segment_length=64)
+
+print("Generated", len(samples), "samples")
+
+for name, stream, prov, tag in samples:
+    print("\n---", name, "---")
+    print("Stream length:", len(stream))
+    print("Provenance:", prov)
+    print("Tag digest:", tag.hex()[:16], "...")
+
+
+LowPrecisionCDTDRBG samples:
+
+Low precision, tight truncation (strong bias).
+
+Medium precision, moderate truncation.
+
+High precision, wide tails (near‑ideal).
+
+KnuthYaoDRBG samples:
+
+Small table, shallow depth (strong truncation artifacts).
+
+Medium table, medium depth.
+
+Large table, deeper tree (closer to ideal).
+
+Each sample comes with:
+
+Stream → raw bytes.
+
+Provenance → parameters + fingerprints.
+
+Tag → SHA‑256 digest binding the segment.
+
+def generate_sampler_spectrum(segment_length=64):
+    results = []
+
+    # LowPrecisionCDTDRBG configurations
+    configs_cdt = [
+        {"sigma": 2.0, "precision_bits": 8, "truncate_T": 4.0},   # low precision, tight truncation
+        {"sigma": 3.0, "precision_bits": 12, "truncate_T": 6.0},  # medium precision
+        {"sigma": 4.0, "precision_bits": 16, "truncate_T": 8.0},  # high precision, wide tails
+    ]
+
+    for cfg in configs_cdt:
+        drbg = LowPrecisionCDTDRBG(q=3329, **cfg)
+        stream = drbg.generate(segment_length)
+        prov = drbg.provenance()
+        tag = drbg.tag_segment(segment_length)
+        results.append(("LowPrecisionCDTDRBG", stream, prov, tag))
+
+    # KnuthYaoDRBG configurations
+    configs_ky = [
+        {"sigma": 2.5, "table_size": 32, "tree_depth_limit": 8},   # small table, shallow depth
+        {"sigma": 3.0, "table_size": 64, "tree_depth_limit": 16},  # medium table, medium depth
+        {"sigma": 4.0, "table_size": 128, "tree_depth_limit": 32}, # large table, deeper tree
+    ]
+
+    for cfg in configs_ky:
+        drbg = KnuthYaoDRBG(q=3329, **cfg)
+        stream = drbg.generate(segment_length)
+        prov = drbg.provenance()
+        tag = drbg.tag_segment(segment_length)
+        results.append(("KnuthYaoDRBG", stream, prov, tag))
+
+    return results
+
+samples = generate_sampler_spectrum(segment_length=64)
+
+print("Generated", len(samples), "samples")
+
+for name, stream, prov, tag in samples:
+    print("\n---", name, "---")
+    print("Stream length:", len(stream))
+    print("Provenance:", prov)
+    print("Tag digest:", tag.hex()[:16], "...")
+
+
+Naive packing, centered: clean baseline.
+
+Naive packing, skewed p, uncentered: entropy collapse via skew.
+
+Vectorized packing: exposes bit‑packing artifacts.
+
+Naive packing with drift: p slowly changes per rotation.
+
+Each sample comes with:
+
+Stream → raw bytes.
+
+Provenance → parameters + fingerprints.
+
+Tag → SHA‑256 digest binding the segment.
+
+def generate_bernoulli_spectrum(segment_length=64):
+    results = []
+
+    configs = [
+        {"n": 8, "p": 0.5, "center": True, "bitpacking_mode": "naive"},       # balanced, centered
+        {"n": 16, "p": 0.3, "center": False, "bitpacking_mode": "naive"},     # skewed p, uncentered
+        {"n": 32, "p": 0.7, "center": True, "bitpacking_mode": "vectorized"}, # vectorized packing
+        {"n": 16, "p": 0.5, "center": True, "bitpacking_mode": "naive", "p_drift_per_rotation": 0.01}, # drift in p
+    ]
+
+    for cfg in configs:
+        drbg = BernoulliSumDRBG(q=3329, **cfg)
+        stream = drbg.generate(segment_length)
+        prov = drbg.provenance()
+        tag = drbg.tag_segment(segment_length)
+        results.append(("BernoulliSumDRBG", stream, prov, tag))
+
+    return results
+
+samples = generate_bernoulli_spectrum(segment_length=64)
+
+print("Generated", len(samples), "samples")
+
+for name, stream, prov, tag in samples:
+    print("\n---", name, "---")
+    print("Stream length:", len(stream))
+    print("Provenance:", prov)
+    print("Tag digest:", tag.hex()[:16], "...")
+
+Naive packing, centered: clean baseline.
+
+Naive packing, skewed p, uncentered: entropy collapse via skew.
+
+Vectorized packing: exposes bit‑packing artifacts.
+
+Naive packing with drift: p slowly changes per rotation.
+
+Each sample comes with:
+
+Stream → raw bytes.
+
+Provenance → parameters + fingerprints.
+
+Tag → SHA‑256 digest binding the segment.
+
+
+def generate_bernoulli_spectrum(segment_length=64):
+    results = []
+
+    configs = [
+        {"n": 8, "p": 0.5, "center": True, "bitpacking_mode": "naive"},       # balanced, centered
+        {"n": 16, "p": 0.3, "center": False, "bitpacking_mode": "naive"},     # skewed p, uncentered
+        {"n": 32, "p": 0.7, "center": True, "bitpacking_mode": "vectorized"}, # vectorized packing
+        {"n": 16, "p": 0.5, "center": True, "bitpacking_mode": "naive", "p_drift_per_rotation": 0.01}, # drift in p
+    ]
+
+    for cfg in configs:
+        drbg = BernoulliSumDRBG(q=3329, **cfg)
+        stream = drbg.generate(segment_length)
+        prov = drbg.provenance()
+        tag = drbg.tag_segment(segment_length)
+        results.append(("BernoulliSumDRBG", stream, prov, tag))
+
+    return results
+
+samples = generate_bernoulli_spectrum(segment_length=64)
+
+print("Generated", len(samples), "samples")
+
+for name, stream, prov, tag in samples:
+    print("\n---", name, "---")
+    print("Stream length:", len(stream))
+    print("Provenance:", prov)
+    print("Tag digest:", tag.hex()[:16], "...")
+
+
+    """
+    Structural generator to simulate RLWE/MLWE streams under different moduli (prime vs power-of-two),
+    polynomial degree n, and module dimension k, with optional skewed embeddings.
+
+    Emits coefficients in Z_q, packed little-endian (2 bytes per coeff), with full provenance + tag.
+
+    Parameters:
+      - q: modulus (int), prime or power-of-two supported
+      - n: ring degree (e.g., 256, 512)
+      - k: module dimension (e.g., 1 for RLWE, >=2 for MLWE)
+      - family: 'Uniform' | 'Gaussian' (base coefficient noise before embedding)
+      - sigma: std dev for Gaussian family (ignored for Uniform)
+      - embedding: 'canonical' | 'skewed' | 'mixed'
+      - basis_skew_strength: integer skew magnitude for 'skewed'/'mixed' embeddings
+      - ntt_friendly: bool flag for whether q,n mimic NTT-friendly setup
+      - pack_mode: 'le16' (default; 2 bytes per coeff)
+    Adversarial toggles:
+      - skewed embeddings (correlation across coefficients)
+      - non-NTT-friendly modulus (periodic leakage potential in downstream transforms)
+    """
+
+def generate_modulus_spectrum(segment_length=1024):
+    results = []
+
+    # A small, digestible set of configurations covering prime vs power-of-two, RLWE vs MLWE,
+    # canonical vs skewed embeddings, and NTT-friendly toggles.
+    configs = [
+        # RLWE, prime q, canonical embedding (clean baseline)
+        {"q": 3329, "n": 256, "k": 1, "family": "Uniform", "ntt_friendly": True, "embedding": "canonical"},
+        # RLWE, prime q, Gaussian noise, NTT-unfriendly (periodic leakage)
+        {"q": 40961, "n": 256, "k": 1, "family": "Gaussian", "sigma": 3.0, "ntt_friendly": False, "embedding": "canonical"},
+        # MLWE (k=3), prime q, mixed embedding with skew
+        {"q": 3329, "n": 256, "k": 3, "family": "Uniform", "embedding": "mixed", "basis_skew_strength": 4, "ntt_friendly": True},
+        # RLWE, power-of-two q (simulate wrap-friendly domain), skewed embedding
+        {"q": 1 << 13, "n": 512, "k": 1, "family": "Gaussian", "sigma": 4.0, "embedding": "skewed", "basis_skew_strength": 6, "ntt_friendly": True},
+        # MLWE (k=2), power-of-two q, NTT-unfriendly + skew (strong artifacts)
+        {"q": 1 << 12, "n": 256, "k": 2, "family": "Uniform", "embedding": "skewed", "basis_skew_strength": 8, "ntt_friendly": False},
+    ]
+
+    for cfg in configs:
+        drbg = ModulusSweepDRBG(**cfg)
+        stream = drbg.generate(segment_length)
+        prov = drbg.provenance()
+        tag = drbg.tag_segment(segment_length)
+        results.append(("ModulusSweepDRBG", stream, prov, tag))
+
+    return results
+
+
+samples = generate_modulus_spectrum(segment_length=1024)
+
+print("Generated", len(samples), "samples")
+
+for name, stream, prov, tag in samples:
+    print("\n---", name, "---")
+    print("Stream length:", len(stream))
+    print("Provenance:", prov)
+    print("Tag digest:", tag.hex()[:16], "...")
+
+    """
+    Generate coefficients then apply a basis change to induce correlations and uneven entropy.
+    Parameters:
+      - q: modulus
+      - n: vector length (degree)
+      - family: 'Uniform' | 'Gaussian'
+      - sigma: std dev if Gaussian
+      - basis_type: 'canonical' | 'skewed' | 'mixed'
+      - skew_strength: integer magnitude of skew
+      - block_size: number of coefficients per transformation block (>=2 recommended)
+
+    Core:
+      - Sample base vector v
+      - Apply basis transform B depending on basis_type:
+        * canonical: identity
+        * skewed: upper-triangular tilt and shared offset
+        * mixed: half canonical, half skewed
+
+    Output:
+      - Map to Z_q, pack 2 bytes little-endian per coeff
+      - Return bytes(out[:length])
+      - Full provenance + tag
+    """
+
+def generate_basis_skew_spectrum(segment_length=1024):
+    results = []
+
+    configs = [
+        # Canonical baseline (no skew)
+        {"q": 3329, "n": 256, "family": "Uniform", "basis_type": "canonical", "skew_strength": 0, "block_size": 8},
+        # Skewed basis with mild strength
+        {"q": 3329, "n": 256, "family": "Gaussian", "sigma": 3.0, "basis_type": "skewed", "skew_strength": 4, "block_size": 8},
+        # Skewed basis with stronger correlation
+        {"q": 3329, "n": 512, "family": "Uniform", "basis_type": "skewed", "skew_strength": 8, "block_size": 16},
+        # Mixed basis (uneven entropy)
+        {"q": 40961, "n": 256, "family": "Uniform", "basis_type": "mixed", "skew_strength": 6, "block_size": 8},
+    ]
+
+    for cfg in configs:
+        drbg = BasisSkewDRBG(**cfg)
+        stream = drbg.generate(segment_length)
+        prov = drbg.provenance()
+        tag = drbg.tag_segment(segment_length)
+        results.append(("BasisSkewDRBG", stream, prov, tag))
+
+    return results
+
+samples = generate_basis_skew_spectrum(segment_length=1024)
+
+print("Generated", len(samples), "samples")
+
+for name, stream, prov, tag in samples:
+    print("\n---", name, "---")
+    print("Stream length:", len(stream))
+    print("Provenance:", prov)
+    print("Tag digest:", tag.hex()[:16], "...")
+
+
+    """
+    Simulate transform leakage in an NTT/INTT pipeline:
+      - periodic twiddle error (Δ added with stride 'period')
+      - rounding mode bias (floor vs nearest)
+      - optional overflow/carry bugs during multiply-accumulate
+
+    Emits coefficients in Z_q, packed little-endian (2 bytes per coeff), with full provenance + tag.
+    """
+
+    """
+    Simulate Kyber-style compression and rounding artifacts:
+      - compress down to 'compress_bits'
+      - rounding mode (floor vs nearest)
+      - optional LSB drop / MSB clamp artifacts
+
+    Emits coefficients in Z_q, packed little-endian (2 bytes per coeff).
+    """
+
+def generate_transform_spectrum(segment_length=1024):
+    results = []
+
+    # NTTArtifactDRBG configurations
+    configs_ntt = [
+        # Clean-ish pipeline: nearest rounding, small periodic leak
+        {"q": 3329, "n": 256, "base_family": "Uniform", "apply_ntt": True, "apply_intt": True,
+         "twiddle_error": 1, "period": 8, "rounding_mode": "nearest", "overflow_mode": "none"},
+        # Strong periodic leak + floor rounding bias
+        {"q": 3329, "n": 256, "base_family": "Gaussian", "sigma": 3.0, "apply_ntt": True, "apply_intt": True,
+         "twiddle_error": 4, "period": 16, "rounding_mode": "floor", "overflow_mode": "none"},
+        # Overflow artifacts (wrap16) with small leak
+        {"q": 40961, "n": 128, "base_family": "Uniform", "apply_ntt": True, "apply_intt": False,
+         "twiddle_error": 2, "period": 8, "rounding_mode": "nearest", "overflow_mode": "wrap16"},
+    ]
+
+    for cfg in configs_ntt:
+        drbg = NTTArtifactDRBG(**cfg)
+        stream = drbg.generate(segment_length)
+        prov = drbg.provenance()
+        tag = drbg.tag_segment(segment_length)
+        results.append(("NTTArtifactDRBG", stream, prov, tag))
+
+    # CompressionBiasDRBG configurations
+    configs_comp = [
+        # Mild compression, nearest rounding
+        {"q": 3329, "n": 256, "base_family": "Uniform", "compress_bits": 10, "rounding_mode": "nearest",
+         "lsb_drop": True, "msb_clamp_bits": 0},
+        # Aggressive compression with floor rounding and MSB clamp
+        {"q": 3329, "n": 256, "base_family": "Gaussian", "sigma": 3.5, "compress_bits": 8, "rounding_mode": "floor",
+         "lsb_drop": True, "msb_clamp_bits": 2},
+        # No LSB drop, higher bit budget (cleaner baseline)
+        {"q": 40961, "n": 128, "base_family": "Uniform", "compress_bits": 12, "rounding_mode": "nearest",
+         "lsb_drop": False, "msb_clamp_bits": 0},
+    ]
+
+    for cfg in configs_comp:
+        drbg = CompressionBiasDRBG(**cfg)
+        stream = drbg.generate(segment_length)
+        prov = drbg.provenance()
+        tag = drbg.tag_segment(segment_length)
+        results.append(("CompressionBiasDRBG", stream, prov, tag))
+
+    return results
+
+    """
+    Generate coefficients and inject periodic offsets simulating cache/timing leaks.
+    Parameters:
+      - q: modulus
+      - n: coefficients per block (emitted per cycle)
+      - base_family: 'Uniform' | 'Gaussian'
+      - sigma: std dev if Gaussian
+      - block_size: number of coefficients that share an offset
+      - timing_jitter: magnitude of per-coeff jitter
+      - leak_strength: magnitude of shared offset per block
+      - secret_correlation: if True, correlate leak/jitter with secret bits
+
+    Adversarial toggles:
+      - shared offset per block (periodic leakage)
+      - jitter correlated with secret bits
+
+    Output:
+      - 2-byte little-endian per coefficient
+      - return bytes(out[:length])
+      - provenance + tag
+    """
+
+def generate_sidechannel_spectrum(segment_length=1024):
+    results = []
+
+    configs = [
+        # Baseline: mild leak, mild jitter, correlated to secret
+        {"q": 3329, "n": 256, "base_family": "Uniform", "sigma": 3.0,
+         "block_size": 16, "leak_strength": 2, "timing_jitter": 1, "secret_correlation": True},
+        # Strong leak, stronger jitter, Gaussian base
+        {"q": 3329, "n": 256, "base_family": "Gaussian", "sigma": 3.0,
+         "block_size": 32, "leak_strength": 5, "timing_jitter": 2, "secret_correlation": True},
+        # Uncorrelated leak/jitter (random signs), smaller blocks
+        {"q": 3329, "n": 256, "base_family": "Uniform", "sigma": 3.0,
+         "block_size": 8, "leak_strength": 3, "timing_jitter": 2, "secret_correlation": False},
+        # Larger modulus, long blocks, subtle jitter only
+        {"q": 40961, "n": 128, "base_family": "Uniform", "sigma": 3.0,
+         "block_size": 64, "leak_strength": 1, "timing_jitter": 1, "secret_correlation": True},
+    ]
+
+    for cfg in configs:
+        drbg = SideChannelPatternDRBG(**cfg)
+        stream = drbg.generate(segment_length)
+        prov = drbg.provenance()
+        tag = drbg.tag_segment(segment_length)
+        results.append(("SideChannelPatternDRBG", stream, prov, tag))
+
+    return results
+
+samples = generate_sidechannel_spectrum(segment_length=1024)
+
+print("Generated", len(samples), "samples")
+
+for name, stream, prov, tag in samples:
+    print("\n---", name, "---")
+    print("Stream length:", len(stream))
+    print("Provenance:", prov)
+    print("Tag digest:", tag.hex()[:16], "...")
+
+    """
+    Generate coefficients and simulate addition/multiplication with overflow artifacts.
+    Parameters:
+      - q: modulus
+      - n: coefficients per block
+      - base_family: 'Uniform' | 'Gaussian'
+      - sigma: std dev if Gaussian
+      - overflow_mode: 'none' | 'wrap16' | 'saturate16'
+      - ops_per_coeff: number of buggy ops per coefficient to amplify artifacts
+
+    Adversarial toggles:
+      - wraparound at 16-bit boundary (wrap16)
+      - saturation at max/min 16-bit values (saturate16)
+
+    Output:
+      - 2-byte little-endian per coefficient
+      - return bytes(out[:length])
+      - provenance + tag
+    """
+
+def generate_carry_bug_spectrum(segment_length=1024):
+    results = []
+
+    # Clean baseline vs wrap vs saturate, both Uniform and Gaussian bases
+    configs = [
+        {"q": 3329, "n": 256, "base_family": "Uniform", "sigma": 3.0, "overflow_mode": "none", "ops_per_coeff": 2},
+        {"q": 3329, "n": 256, "base_family": "Uniform", "sigma": 3.0, "overflow_mode": "wrap16", "ops_per_coeff": 4},
+        {"q": 3329, "n": 256, "base_family": "Uniform", "sigma": 3.0, "overflow_mode": "saturate16", "ops_per_coeff": 4},
+        {"q": 3329, "n": 256, "base_family": "Gaussian", "sigma": 3.0, "overflow_mode": "wrap16", "ops_per_coeff": 6},
+        {"q": 40961, "n": 128, "base_family": "Gaussian", "sigma": 4.0, "overflow_mode": "saturate16", "ops_per_coeff": 6},
+    ]
+
+    for cfg in configs:
+        drbg = CarryBugDRBG(**cfg)
+        stream = drbg.generate(segment_length)
+        prov = drbg.provenance()
+        tag = drbg.tag_segment(segment_length)
+        results.append(("CarryBugDRBG", stream, prov, tag))
+
+    return results
+
+samples = generate_carry_bug_spectrum(segment_length=1024)
+
+print("Generated", len(samples), "samples")
+
+for name, stream, prov, tag in samples:
+    print("\n---", name, "---")
+    print("Stream length:", len(stream))
+    print("Provenance:", prov)
+    print("Tag digest:", tag.hex()[:16], "...")
+
+    """
+    Multiply polynomials using either schoolbook convolution or an NTT-like pipeline,
+    then emit coefficients mod q. Designed to expose method-specific artifacts.
+
+    Parameters:
+      - q: modulus
+      - n: polynomial degree (coeffs per polynomial)
+      - mode: 'schoolbook' | 'ntt'
+      - carry_bug_mode: 'none' | 'wrap16' | 'saturate16'  (schoolbook-only toggle)
+      - twiddle_missing_rate: 0.0..1.0 (probability to omit twiddle; ntt-only toggle)
+      - period: stride for periodic twiddle structure (ntt-only)
+
+    Output:
+      - 2-byte little-endian per coefficient
+      - return bytes(out[:length])
+      - provenance + tag
+    """
+
+def generate_mult_method_spectrum(segment_length=1024):
+    results = []
+
+    # Schoolbook configurations
+    configs_schoolbook = [
+        {"q": 3329, "n": 256, "mode": "schoolbook", "carry_bug_mode": "none"},      # clean baseline
+        {"q": 3329, "n": 256, "mode": "schoolbook", "carry_bug_mode": "wrap16"},    # wrap overflow artifact
+        {"q": 3329, "n": 256, "mode": "schoolbook", "carry_bug_mode": "saturate16"} # saturate overflow artifact
+    ]
+
+    for cfg in configs_schoolbook:
+        drbg = SchoolbookVsNTTDRBG(**cfg)
+        stream = drbg.generate(segment_length)
+        prov = drbg.provenance()
+        tag = drbg.tag_segment(segment_length)
+        results.append(("SchoolbookVsNTTDRBG", stream, prov, tag))
+
+    # NTT-like configurations
+    configs_ntt = [
+        {"q": 3329, "n": 256, "mode": "ntt", "twiddle_missing_rate": 0.0, "period": 8},   # clean-ish NTT
+        {"q": 3329, "n": 256, "mode": "ntt", "twiddle_missing_rate": 0.1, "period": 8},   # mild missing twiddles
+        {"q": 3329, "n": 256, "mode": "ntt", "twiddle_missing_rate": 0.3, "period": 16},  # stronger leakage, longer stride
+    ]
+
+    for cfg in configs_ntt:
+        drbg = SchoolbookVsNTTDRBG(**cfg)
+        stream = drbg.generate(segment_length)
+        prov = drbg.provenance()
+        tag = drbg.tag_segment(segment_length)
+        results.append(("SchoolbookVsNTTDRBG", stream, prov, tag))
+
+    return results
+
+samples = generate_mult_method_spectrum(segment_length=1024)
+
+print("Generated", len(samples), "samples")
+
+for name, stream, prov, tag in samples:
+    print("\n---", name, "---")
+    print("Stream length:", len(stream))
+    print("Provenance:", prov)
+    print("Tag digest:", tag.hex()[:16], "...")
+
+
+    """
+    Simulate branch-dependent timing artifacts by conditionally adding jitter to coefficients.
+    Parameters:
+      - q: modulus
+      - n: coefficients per block
+      - base_family: 'Uniform' | 'Gaussian'
+      - sigma: std dev if Gaussian
+      - branch_bias_rate: probability (0..1) that branch condition is treated as 'taken'
+      - jitter_range: max absolute jitter magnitude (integer)
+      - block_size: periodic stall cadence; shared offset applied per block
+
+    Adversarial toggles:
+      - secret-correlated jitter polarity (tied to secret bytes)
+      - periodic stalls via fixed shared offsets per block
+
+    Output:
+      - 2-byte little-endian per coefficient
+      - return bytes(out[:length])
+      - provenance + tag
+    """
+
+def generate_branch_jitter_spectrum(segment_length=1024):
+    results = []
+
+    configs = [
+        # Baseline: moderate bias, mild jitter, small blocks
+        {"q": 3329, "n": 256, "base_family": "Uniform", "sigma": 3.0,
+         "branch_bias_rate": 0.3, "jitter_range": 2, "block_size": 8,
+         "secret_correlation": True, "stall_amplitude": 1},
+        # Strong jitter, larger blocks, secret-correlated
+        {"q": 3329, "n": 256, "base_family": "Gaussian", "sigma": 3.0,
+         "branch_bias_rate": 0.5, "jitter_range": 4, "block_size": 16,
+         "secret_correlation": True, "stall_amplitude": 3},
+        # Uncorrelated jitter, stronger periodic stalls
+        {"q": 3329, "n": 256, "base_family": "Uniform", "sigma": 3.0,
+         "branch_bias_rate": 0.2, "jitter_range": 3, "block_size": 32,
+         "secret_correlation": False, "stall_amplitude": 4},
+        # High bias rate, subtle jitter, larger modulus
+        {"q": 40961, "n": 128, "base_family": "Uniform", "sigma": 3.0,
+         "branch_bias_rate": 0.7, "jitter_range": 1, "block_size": 16,
+         "secret_correlation": True, "stall_amplitude": 2},
+    ]
+
+    for cfg in configs:
+        drbg = BranchJitterSamplerDRBG(**cfg)
+        stream = drbg.generate(segment_length)
+        prov = drbg.provenance()
+        tag = drbg.tag_segment(segment_length)
+        results.append(("BranchJitterSamplerDRBG", stream, prov, tag))
+
+    return results
+
+samples = generate_branch_jitter_spectrum(segment_length=1024)
+
+print("Generated", len(samples), "samples")
+
+for name, stream, prov, tag in samples:
+    print("\n---", name, "---")
+    print("Stream length:", len(stream))
+    print("Provenance:", prov)
+    print("Tag digest:", tag.hex()[:16], "...")
+
+
+
+
+
+
+
+
+    """
+    Inject cache-line sized periodic offsets with optional phase drift across rotations,
+    plus mild random jitter. Occasional amplitude spikes emulate precharge/stall events.
+
+    Parameters:
+      - q: modulus
+      - n: coefficients per block
+      - base_family: 'Uniform' | 'Gaussian'
+      - sigma: std dev if Gaussian
+      - cache_line: periodic stride for shared offset injection
+      - stall_amplitude: base magnitude of the periodic offset
+      - phase_shift: per-rotation phase drift (in coefficients)
+      - jitter_range: max absolute jitter per coefficient (default: 1)
+      - spike_prob: probability of amplitude spike per block (default: 0.05)
+      - spike_multiplier: factor applied to stall_amplitude during spikes (default: 4)
+
+    Adversarial toggles:
+      - phase drift: slow rotation of periodic pattern via phase_shift
+      - amplitude spikes: occasional high stalls to mimic precharge events
+
+    Output:
+      - 2-byte little-endian per coefficient
+      - return bytes(out[:length])
+      - provenance + tag
+    """
+
+def generate_cacheline_periodic_spectrum(segment_length=1024):
+    results = []
+
+    configs = [
+        # Baseline: small stride, mild amplitude, slow phase drift, uniform base
+        {"q": 3329, "n": 256, "base_family": "Uniform", "sigma": 3.0,
+         "cache_line": 16, "stall_amplitude": 2, "phase_shift": 1,
+         "jitter_range": 1, "spike_prob": 0.05, "spike_multiplier": 4},
+        # Larger stride, stronger amplitude, faster phase drift, Gaussian base
+        {"q": 3329, "n": 256, "base_family": "Gaussian", "sigma": 3.0,
+         "cache_line": 32, "stall_amplitude": 4, "phase_shift": 2,
+         "jitter_range": 2, "spike_prob": 0.1, "spike_multiplier": 6},
+        # Very large stride, subtle amplitude, minimal jitter, almost no spikes
+        {"q": 40961, "n": 128, "base_family": "Uniform", "sigma": 3.0,
+         "cache_line": 64, "stall_amplitude": 1, "phase_shift": 1,
+         "jitter_range": 0, "spike_prob": 0.01, "spike_multiplier": 8},
+        # Small stride, aggressive spikes, higher jitter
+        {"q": 3329, "n": 256, "base_family": "Uniform", "sigma": 3.0,
+         "cache_line": 8, "stall_amplitude": 2, "phase_shift": 1,
+         "jitter_range": 3, "spike_prob": 0.2, "spike_multiplier": 5},
+    ]
+
+    for cfg in configs:
+        drbg = CacheLinePeriodicDRBG(**cfg)
+        stream = drbg.generate(segment_length)
+        prov = drbg.provenance()
+        tag = drbg.tag_segment(segment_length)
+        results.append(("CacheLinePeriodicDRBG", stream, prov, tag))
+
+    return results
+
+samples = generate_cacheline_periodic_spectrum(segment_length=1024)
+
+print("Generated", len(samples), "samples")
+
+for name, stream, prov, tag in samples:
+    print("\n---", name, "---")
+    print("Stream length:", len(stream))
+    print("Provenance:", prov)
+    print("Tag digest:", tag.hex()[:16], "...")
+
+    """
+    Construct a per-coeff jitter sequence where sign/magnitude is modulated by secret bits
+    with a configurable correlation rate. Adds a shared block offset and optional burst jitter.
+
+    Parameters:
+      - q: modulus
+      - n: coefficients per block
+      - base_family: 'Uniform' | 'Gaussian'
+      - sigma: std dev if Gaussian
+      - jitter_base: mean jitter magnitude (integer)
+      - jitter_variance: variance of jitter magnitude (float)
+      - secret_correlation_rate: probability [0..1] that jitter polarity derives from secret bits
+      - block_size: number of coeffs per block for shared offset periodicity
+      - stall_amplitude: magnitude of shared block offset (integer)
+      - burst_prob: probability that a block contains a jitter burst
+      - burst_length: length of contiguous elevated-jitter run
+      - burst_boost: multiplier applied to jitter magnitude during bursts
+
+    Output:
+      - 2-byte little-endian per coefficient
+      - return bytes(out[:length])
+      - provenance + tag
+    """
+
+def generate_secret_clock_jitter_spectrum(segment_length=1024):
+    results = []
+
+    configs = [
+        # Baseline: moderate correlation, mild variance, small blocks
+        {"q": 3329, "n": 256, "base_family": "Uniform", "sigma": 3.0,
+         "jitter_base": 2, "jitter_variance": 1.0, "secret_correlation_rate": 0.5,
+         "block_size": 16, "stall_amplitude": 2, "burst_prob": 0.1, "burst_length": 8, "burst_boost": 3},
+        # High correlation, stronger bursts (stress coupling detectors)
+        {"q": 3329, "n": 256, "base_family": "Gaussian", "sigma": 3.0,
+         "jitter_base": 3, "jitter_variance": 2.0, "secret_correlation_rate": 1.0,
+         "block_size": 16, "stall_amplitude": 3, "burst_prob": 0.2, "burst_length": 12, "burst_boost": 4},
+        # Low correlation, subtle jitter, larger modulus, long blocks
+        {"q": 40961, "n": 128, "base_family": "Uniform", "sigma": 3.0,
+         "jitter_base": 1, "jitter_variance": 0.5, "secret_correlation_rate": 0.1,
+         "block_size": 32, "stall_amplitude": 1, "burst_prob": 0.05, "burst_length": 6, "burst_boost": 2},
+        # No correlation, but aggressive bursts to test burst detectors
+        {"q": 3329, "n": 256, "base_family": "Uniform", "sigma": 3.0,
+         "jitter_base": 2, "jitter_variance": 1.5, "secret_correlation_rate": 0.0,
+         "block_size": 16, "stall_amplitude": 2, "burst_prob": 0.3, "burst_length": 16, "burst_boost": 5},
+    ]
+
+    for cfg in configs:
+        drbg = SecretClockJitterDRBG(**cfg)
+        stream = drbg.generate(segment_length)
+        prov = drbg.provenance()
+        tag = drbg.tag_segment(segment_length)
+        results.append(("SecretClockJitterDRBG", stream, prov, tag))
+
+    return results
+
+samples = generate_secret_clock_jitter_spectrum(segment_length=1024)
+
+print("Generated", len(samples), "samples")
+
+for name, stream, prov, tag in samples:
+    print("\n---", name, "---")
+    print("Stream length:", len(stream))
+    print("Provenance:", prov)
+    print("Tag digest:", tag.hex()[:16], "...")
+
+    """
+    Quantize real-domain samples to fixed-point with chosen bit width, rounding mode, and tail clipping.
+    Parameters:
+      - q: modulus
+      - n: coefficients per block
+      - family: 'Uniform' | 'Gaussian'
+      - sigma: std dev if Gaussian
+      - bit_width: {8, 12, 16} effective fixed-point bits
+      - rounding_mode: 'floor' | 'nearest' | 'stochastic'
+      - clip_T: tails clipped at ±clip_T * sigma (Gaussian) or ±clip_T * (q/2) (Uniform baseline)
+
+    Core:
+      - Sample real values
+      - Clip tails
+      - Scale to fixed-point
+      - Apply rounding mode
+      - Map back to Z_q residues
+
+    Output:
+      - 2-byte little-endian per coefficient
+      - return bytes(out[:length])
+      - provenance + tag
+    """
+
+def generate_fixedpoint_spectrum(segment_length=1024):
+    results = []
+
+    configs = [
+        # Gaussian, nearest rounding, moderate clip
+        {"q": 3329, "n": 256, "family": "Gaussian", "sigma": 3.0,
+         "bit_width": 16, "rounding_mode": "nearest", "clip_T": 6.0},
+        # Gaussian, floor rounding, low bit width (strong step artifacts)
+        {"q": 3329, "n": 256, "family": "Gaussian", "sigma": 3.0,
+         "bit_width": 8, "rounding_mode": "floor", "clip_T": 6.0},
+        # Gaussian, stochastic rounding, mid bit width
+        {"q": 3329, "n": 256, "family": "Gaussian", "sigma": 3.0,
+         "bit_width": 12, "rounding_mode": "stochastic", "clip_T": 6.0},
+        # Uniform baseline, nearest rounding, aggressive clipping
+        {"q": 3329, "n": 256, "family": "Uniform", "sigma": 3.0,
+         "bit_width": 12, "rounding_mode": "nearest", "clip_T": 4.0},
+        # Larger modulus, floor rounding, mid bit width
+        {"q": 40961, "n": 128, "family": "Gaussian", "sigma": 3.5,
+         "bit_width": 12, "rounding_mode": "floor", "clip_T": 8.0},
+    ]
+
+    for cfg in configs:
+        drbg = FixedPointSamplerDRBG(**cfg)
+        stream = drbg.generate(segment_length)
+        prov = drbg.provenance()
+        tag = drbg.tag_segment(segment_length)
+        results.append(("FixedPointSamplerDRBG", stream, prov, tag))
+
+    return results
+
+samples = generate_fixedpoint_spectrum(segment_length=1024)
+
+print("Generated", len(samples), "samples")
+
+for name, stream, prov, tag in samples:
+    print("\n---", name, "---")
+    print("Stream length:", len(stream))
+    print("Provenance:", prov)
+    print("Tag digest:", tag.hex()[:16], "...")
+
+    """
+    Build a limited-precision discrete Gaussian CDF/PMF up to T*sigma, sample via table,
+    enforce truncation, and emit residues mod q.
+
+    Parameters:
+      - q: modulus
+      - n: coefficients per block
+      - sigma: target standard deviation
+      - table_T: truncation threshold in sigma units (e.g., 4.0, 6.0)
+      - table_precision_bits: quantization bits for the CDF table (e.g., 8, 12, 16)
+      - symmetric: if True, use symmetric ±k support; else one-sided then sign-inject
+      - rotate_every: bytes per rotation
+      - label: DRBG label
+
+    Adversarial toggles:
+      - Low precision CDF (table_precision_bits): rounding artifacts in tails
+      - Aggressive truncation (small T): abrupt tail collapse and kurtosis change
+
+    Output:
+      - 2-byte little-endian per coefficient
+      - return bytes(out[:length])
+      - provenance + tag
+    """
+
+def generate_truncated_table_spectrum(segment_length=1024):
+    results = []
+
+    configs = [
+        # Baseline: moderate precision, typical truncation
+        {"q": 3329, "n": 256, "sigma": 3.0, "table_T": 6.0, "table_precision_bits": 12, "symmetric": True},
+        # Low precision CDF: stronger rounding artifacts in tails
+        {"q": 3329, "n": 256, "sigma": 3.0, "table_T": 6.0, "table_precision_bits": 8, "symmetric": True},
+        # Aggressive truncation: tail collapse (stress detectors)
+        {"q": 3329, "n": 256, "sigma": 3.0, "table_T": 4.0, "table_precision_bits": 12, "symmetric": True},
+        # Higher precision, larger modulus, one-sided table
+        {"q": 40961, "n": 128, "sigma": 3.5, "table_T": 6.0, "table_precision_bits": 16, "symmetric": False},
+    ]
+
+    for cfg in configs:
+        drbg = TruncatedGaussianTableDRBG(**cfg)
+        stream = drbg.generate(segment_length)
+        prov = drbg.provenance()
+        tag = drbg.tag_segment(segment_length)
+        results.append(("TruncatedGaussianTableDRBG", stream, prov, tag))
+
+    return results
+
+samples = generate_truncated_table_spectrum(segment_length=1024)
+
+print("Generated", len(samples), "samples")
+
+for name, stream, prov, tag in samples:
+    print("\n---", name, "---")
+    print("Stream length:", len(stream))
+    print("Provenance:", prov)
+    print("Tag digest:", tag.hex()[:16], "...")
+
+    """
+    Apply NTT/INTT with twiddle factors quantized to given bit width; round each stage according to rounding_mode.
+    Parameters:
+      - q: modulus
+      - n: polynomial degree
+      - twiddle_bit_width: quantization bits for twiddle factors (e.g., 8, 12, 16)
+      - rounding_mode: 'floor' | 'nearest' | 'stochastic'
+      - stages: number of transform stages (default: log2(n))
+      - rotate_every: bytes per rotation
+      - label: DRBG label
+
+    Adversarial toggles:
+      - Under-quantized twiddles: periodic distortions
+      - Stage-wise rounding: accumulate bias across layers
+
+    Output:
+      - 2-byte little-endian per coefficient
+      - return bytes(out[:length])
+      - provenance + tag
+    """
+
+def generate_lowprecision_twiddle_spectrum(segment_length=1024):
+    results = []
+
+    configs = [
+        # Baseline: 16-bit twiddles, nearest rounding
+        {"q": 3329, "n": 256, "twiddle_bit_width": 16, "rounding_mode": "nearest"},
+        # Under-quantized twiddles: 8-bit, floor rounding
+        {"q": 3329, "n": 256, "twiddle_bit_width": 8, "rounding_mode": "floor"},
+        # Mid precision twiddles: 12-bit, stochastic rounding
+        {"q": 3329, "n": 256, "twiddle_bit_width": 12, "rounding_mode": "stochastic"},
+        # Larger modulus, fewer stages, floor rounding
+        {"q": 40961, "n": 128, "twiddle_bit_width": 10, "rounding_mode": "floor", "stages": 4},
+    ]
+
+    for cfg in configs:
+        drbg = LowPrecisionTwiddleNTTDRBG(**cfg)
+        stream = drbg.generate(segment_length)
+        prov = drbg.provenance()
+        tag = drbg.tag_segment(segment_length)
+        results.append(("LowPrecisionTwiddleNTTDRBG", stream, prov, tag))
+
+    return results
+
+samples = generate_lowprecision_twiddle_spectrum(segment_length=1024)
+
+print("Generated", len(samples), "samples")
+
+for name, stream, prov, tag in samples:
+    print("\n---", name, "---")
+    print("Stream length:", len(stream))
+    print("Provenance:", prov)
+    print("Tag digest:", tag.hex()[:16], "...")
+
+    """
+    Alternate bursts of emulated TRNG bytes with deterministic DRBG outputs; blend via mix_ratio.
+    Parameters:
+      - q: modulus
+      - n: coefficients per block
+      - mix_ratio: fraction [0..1] of coefficients sourced from TRNG during a TRNG burst
+      - burst_length: number of coefficients in a TRNG burst window
+      - trng_emulation: 'ideal' | 'biased' | 'stuck'  (emulated TRNG behavior)
+      - stuck_bit_prob: probability a TRNG bit is stuck (only for 'stuck')
+      - bias_p1: probability of bit=1 (only for 'biased')
+      - drbg_family: callable factory that returns a deterministic DRBG instance (must support generate/provenance/tag_segment)
+      - drbg_params: dict of params passed to drbg_family
+      - block_size: emission block size for blending and burst management
+
+    Adversarial toggles:
+      - biased TRNG bits (p(1) != 0.5)
+      - stuck bits (per-bit or per-byte)
+      - deterministic islands (long stretches of DRBG-only output)
+
+    Output:
+      - 2-byte little-endian per coefficient
+      - return bytes(out[:length])
+      - provenance + tag
+    """
+
+# Example: use a simple deterministic source (CarryBugDRBG) as the DRBG family
+# You can swap any previously defined DRBG here.
+
+def generate_trng_blend_spectrum(segment_length=1024):
+    results = []
+
+    from hashlib import sha256
+
+    # Minimal deterministic DRBG stub for demo; replace with your vetted generators
+    class DeterministicStubDRBG:
+        def __init__(self, q=3329, n=256, label=b"DeterministicStubDRBG"):
+            self.q = q
+            self.n = n
+            self.label = label
+            self._counter = 0
+        def generate(self, length: int):
+            out = bytearray()
+            while len(out) < length:
+                self._counter = (self._counter + 1) % (1 << 16)
+                coeff = self._counter % self.q
+                out.extend(coeff.to_bytes(2, "little"))
+            return bytes(out)
+        def provenance(self): return {"stub": True}
+        def tag_segment(self, length: int): return sha256(str(self._counter).encode()).digest()
+
+    configs = [
+        # Ideal TRNG bursts, balanced mixing
+        {"q": 3329, "n": 256, "mix_ratio": 0.5, "burst_length": 32,
+         "trng_emulation": "ideal", "drbg_family": DeterministicStubDRBG, "drbg_params": {"q": 3329, "n": 256},
+         "block_size": 64, "deterministic_island_prob": 0.0},
+        # Biased TRNG (p1=0.6), stronger DRBG islands
+        {"q": 3329, "n": 256, "mix_ratio": 0.4, "burst_length": 16,
+         "trng_emulation": "biased", "bias_p1": 0.6, "drbg_family": DeterministicStubDRBG, "drbg_params": {"q": 3329, "n": 256},
+         "block_size": 64, "deterministic_island_prob": 0.2, "deterministic_island_length": 128},
+        # Stuck bits TRNG, high mixing ratio, short bursts
+        {"q": 3329, "n": 256, "mix_ratio": 0.8, "burst_length": 8,
+         "trng_emulation": "stuck", "stuck_bit_prob": 0.05, "drbg_family": DeterministicStubDRBG, "drbg_params": {"q": 3329, "n": 256},
+         "block_size": 32, "deterministic_island_prob": 0.05},
+        # Larger modulus, moderate mix, longer bursts
+        {"q": 40961, "n": 128, "mix_ratio": 0.5, "burst_length": 32,
+         "trng_emulation": "ideal", "drbg_family": DeterministicStubDRBG, "drbg_params": {"q": 40961, "n": 128},
+         "block_size": 64, "deterministic_island_prob": 0.1},
+    ]
+
+    for cfg in configs:
+        drbg = TRNGBurstBlendDRBG(**cfg)
+        stream = drbg.generate(segment_length)
+        prov = drbg.provenance()
+        tag = drbg.tag_segment(segment_length)
+        results.append(("TRNGBurstBlendDRBG", stream, prov, tag))
+
+    return results
+
+//This is we want plug another DRBG and how to do it...
+
+# Example: plug in ModulusSweepDRBG or NTTArtifactDRBG as the deterministic source
+
+def generate_trng_blend_spectrum(segment_length=1024):
+    results = []
+
+    # Configurations using different deterministic DRBG families
+    configs = [
+        # Blend with ModulusSweepDRBG
+        {"q": 3329, "n": 256, "mix_ratio": 0.5, "burst_length": 32,
+         "trng_emulation": "ideal",
+         "drbg_family": ModulusSweepDRBG,
+         "drbg_params": {"q": 3329, "n": 256, "k": 1, "family": "Uniform", "embedding": "canonical"},
+         "block_size": 64, "deterministic_island_prob": 0.0},
+
+        # Blend with NTTArtifactDRBG
+        {"q": 3329, "n": 256, "mix_ratio": 0.4, "burst_length": 16,
+         "trng_emulation": "biased", "bias_p1": 0.6,
+         "drbg_family": NTTArtifactDRBG,
+         "drbg_params": {"q": 3329, "n": 256, "base_family": "Gaussian", "sigma": 3.0,
+                         "apply_ntt": True, "apply_intt": True,
+                         "twiddle_error": 2, "period": 8, "rounding_mode": "floor"},
+         "block_size": 64, "deterministic_island_prob": 0.2, "deterministic_island_length": 128},
+
+        # Blend with CarryBugDRBG
+        {"q": 3329, "n": 256, "mix_ratio": 0.8, "burst_length": 8,
+         "trng_emulation": "stuck", "stuck_bit_prob": 0.05,
+         "drbg_family": CarryBugDRBG,
+         "drbg_params": {"q": 3329, "n": 256, "base_family": "Uniform", "overflow_mode": "wrap16", "ops_per_coeff": 4},
+         "block_size": 32, "deterministic_island_prob": 0.05},
+
+        # Blend with SideChannelPatternDRBG
+        {"q": 40961, "n": 128, "mix_ratio": 0.5, "burst_length": 32,
+         "trng_emulation": "ideal",
+         "drbg_family": SideChannelPatternDRBG,
+         "drbg_params": {"q": 40961, "n": 128, "base_family": "Uniform", "block_size": 16,
+                         "timing_jitter": 2, "leak_strength": 3, "secret_correlation": True},
+         "block_size": 64, "deterministic_island_prob": 0.1},
+    ]
+
+    for cfg in configs:
+        drbg = TRNGBurstBlendDRBG(**cfg)
+        stream = drbg.generate(segment_length)
+        prov = drbg.provenance()
+        tag = drbg.tag_segment(segment_length)
+        results.append(("TRNGBurstBlendDRBG", stream, prov, tag))
+
+    return results
+
+    """
+    Interleave coefficients from two sources (e.g., TRNG and DRBG) with fixed stride.
+    Optional stride jitter blurs boundaries. Secret bytes can be used to modulate stride
+    or trigger source swaps mid-rotation.
+
+    Parameters:
+      - q: modulus
+      - n: coefficients per block
+      - interleave_stride: number of coefficients taken from one source before switching
+      - source_a: DRBG class for first source
+      - source_b: DRBG class for second source
+      - params_a: dict of init params for source_a
+      - params_b: dict of init params for source_b
+      - stride_jitter: max jitter applied to stride length
+      - rotate_every: bytes per rotation
+      - label: DRBG label
+
+    Adversarial toggles:
+      - stride jitter: misalignment noise
+      - source swap: change dominant source mid-rotation
+
+    Output:
+      - 2-byte little-endian per coefficient
+      - provenance + tag
+    """
+
+def generate_interleave_mix_spectrum(segment_length=1024):
+    results = []
+
+    configs = [
+        # Interleave TRNG emulation with ModulusSweepDRBG
+        {"q": 3329, "n": 256, "interleave_stride": 4, "stride_jitter": 1,
+         "source_a": ModulusSweepDRBG,
+         "params_a": {"q": 3329, "n": 256, "k": 1, "family": "Uniform", "embedding": "canonical"},
+         "source_b": TRNGBurstBlendDRBG,
+         "params_b": {"q": 3329, "n": 256, "mix_ratio": 0.5, "burst_length": 16,
+                      "trng_emulation": "ideal", "drbg_family": CarryBugDRBG,
+                      "drbg_params": {"q": 3329, "n": 256, "overflow_mode": "wrap16"}}},
+
+        # Interleave NTTArtifactDRBG with SideChannelPatternDRBG
+        {"q": 3329, "n": 256, "interleave_stride": 8, "stride_jitter": 2,
+         "source_a": NTTArtifactDRBG,
+         "params_a": {"q": 3329, "n": 256, "base_family": "Gaussian", "sigma": 3.0,
+                      "apply_ntt": True, "apply_intt": True, "twiddle_error": 2,
+                      "period": 8, "rounding_mode": "floor"},
+         "source_b": SideChannelPatternDRBG,
+         "params_b": {"q": 3329, "n": 256, "base_family": "Uniform", "block_size": 16,
+                      "timing_jitter": 2, "leak_strength": 3, "secret_correlation": True}},
+
+        # Interleave FixedPointSamplerDRBG with TruncatedGaussianTableDRBG
+        {"q": 3329, "n": 256, "interleave_stride": 6, "stride_jitter": 1,
+         "source_a": FixedPointSamplerDRBG,
+         "params_a": {"q": 3329, "n": 256, "family": "Gaussian", "sigma": 3.0,
+                      "bit_width": 8, "rounding_mode": "floor", "clip_T": 6.0},
+         "source_b": TruncatedGaussianTableDRBG,
+         "params_b": {"q": 3329, "n": 256, "sigma": 3.0, "table_T": 4.0,
+                      "table_precision_bits": 8, "symmetric": True}},
+
+        # Larger modulus: interleave CarryBugDRBG with SecretClockJitterDRBG
+        {"q": 40961, "n": 128, "interleave_stride": 10, "stride_jitter": 3,
+         "source_a": CarryBugDRBG,
+         "params_a": {"q": 40961, "n": 128, "base_family": "Uniform",
+                      "overflow_mode": "saturate16", "ops_per_coeff": 6},
+         "source_b": SecretClockJitterDRBG,
+         "params_b": {"q": 40961, "n": 128, "base_family": "Uniform", "sigma": 3.0,
+                      "jitter_base": 2, "jitter_variance": 1.0, "secret_correlation_rate": 0.5,
+                      "block_size": 16, "stall_amplitude": 2, "burst_prob": 0.1,
+                      "burst_length": 8, "burst_boost": 3}},
+    ]
+
+    for cfg in configs:
+        drbg = InterleaveMixDRBG(**cfg)
+        stream = drbg.generate(segment_length)
+        prov = drbg.provenance()
+        tag = drbg.tag_segment(segment_length)
+        results.append(("InterleaveMixDRBG", stream, prov, tag))
+
+    return results
+
+
+samples = generate_interleave_mix_spectrum(segment_length=1024)
+
+print("Generated", len(samples), "samples")
+
+for name, stream, prov, tag in samples:
+    print("\n---", name, "---")
+    print("Stream length:", len(stream))
+    print("Provenance:", prov)
+    print("Tag digest:", tag.hex()[:16], "...")
+
+    """
+    XOR packed bytes from true RNG bursts with deterministic generator bytes according to xor_ratio.
+    Map back to coefficients mod q.
+
+    Parameters:
+      - q: modulus
+      - n: coefficients per block
+      - xor_ratio: fraction [0..1] of bytes XORed with TRNG source
+      - source_a: DRBG class for deterministic source
+      - source_b: DRBG class for TRNG emulation source
+      - params_a: dict of init params for source_a
+      - params_b: dict of init params for source_b
+      - patterned_positions: optional list of byte positions to XOR (patterned XOR)
+      - rotate_every: bytes per rotation
+      - label: DRBG label
+
+    Adversarial toggles:
+      - sparse XOR: insufficient whitening leaves artifacts
+      - patterned XOR: XOR only on specific byte positions
+
+    Output:
+      - 2-byte little-endian per coefficient
+      - provenance + tag
+    """
+
+def generate_xor_blend_spectrum(segment_length=1024):
+    results = []
+
+    configs = [
+        # Uniform XOR coverage, ModulusSweepDRBG + TRNGBurstBlendDRBG
+        {"q": 3329, "n": 256, "xor_ratio": 0.5,
+         "source_a": ModulusSweepDRBG,
+         "params_a": {"q": 3329, "n": 256, "k": 1, "family": "Uniform", "embedding": "canonical"},
+         "source_b": TRNGBurstBlendDRBG,
+         "params_b": {"q": 3329, "n": 256, "mix_ratio": 0.5, "burst_length": 16,
+                      "trng_emulation": "ideal", "drbg_family": CarryBugDRBG,
+                      "drbg_params": {"q": 3329, "n": 256, "overflow_mode": "wrap16"}}},
+
+        # Sparse XOR (low coverage), NTTArtifactDRBG + SideChannelPatternDRBG
+        {"q": 3329, "n": 256, "xor_ratio": 0.25,
+         "source_a": NTTArtifactDRBG,
+         "params_a": {"q": 3329, "n": 256, "base_family": "Gaussian", "sigma": 3.0,
+                      "apply_ntt": True, "apply_intt": True, "twiddle_error": 2,
+                      "period": 8, "rounding_mode": "floor"},
+         "source_b": SideChannelPatternDRBG,
+         "params_b": {"q": 3329, "n": 256, "base_family": "Uniform", "block_size": 16,
+                      "timing_jitter": 2, "leak_strength": 3, "secret_correlation": True}},
+
+        # Patterned XOR (only on LSB byte), FixedPointSamplerDRBG + TruncatedGaussianTableDRBG
+        {"q": 3329, "n": 256, "xor_ratio": 0.75,
+         "source_a": FixedPointSamplerDRBG,
+         "params_a": {"q": 3329, "n": 256, "family": "Gaussian", "sigma": 3.0,
+                      "bit_width": 8, "rounding_mode": "floor", "clip_T": 6.0},
+         "source_b": TruncatedGaussianTableDRBG,
+         "params_b": {"q": 3329, "n": 256, "sigma": 3.0, "table_T": 4.0,
+                      "table_precision_bits": 8, "symmetric": True},
+         "patterned_positions": [0]},  # XOR only on the first byte (LSB)
+
+        # Larger modulus, mixed XOR coverage, CarryBugDRBG + SecretClockJitterDRBG
+        {"q": 40961, "n": 128, "xor_ratio": 0.5,
+         "source_a": CarryBugDRBG,
+         "params_a": {"q": 40961, "n": 128, "base_family": "Uniform",
+                      "overflow_mode": "saturate16", "ops_per_coeff": 6},
+         "source_b": SecretClockJitterDRBG,
+         "params_b": {"q": 40961, "n": 128, "base_family": "Uniform", "sigma": 3.0,
+                      "jitter_base": 2, "jitter_variance": 1.0, "secret_correlation_rate": 0.5,
+                      "block_size": 16, "stall_amplitude": 2, "burst_prob": 0.1,
+                      "burst_length": 8, "burst_boost": 3}},
+    ]
+
+    for cfg in configs:
+        drbg = XORBlendDRBG(**cfg)
+        stream = drbg.generate(segment_length)
+        prov = drbg.provenance()
+        tag = drbg.tag_segment(segment_length)
+        results.append(("XORBlendDRBG", stream, prov, tag))
+
+    return results
+
+samples = generate_xor_blend_spectrum(segment_length=1024)
+
+print("Generated", len(samples), "samples")
+
+for name, stream, prov, tag in samples:
+    print("\n---", name, "---")
+    print("Stream length:", len(stream))
+    print("Provenance:", prov)
+    print("Tag digest:", tag.hex()[:16], "...")
+
+
+
+
+

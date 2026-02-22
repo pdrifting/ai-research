@@ -1,0 +1,343 @@
+NIST TEST RUN
+==============================================
+T01: Frequency (Monobit)
+T02: Frequency within Block
+T03: Runs
+T04: Longest Run of Ones in Block
+T05: Binary Matrix Rank
+T06: Non-overlapping Template Matching
+T07: Overlapping Template Matching
+T08: Maurer’s Universal
+T09: Linear Complexity
+T10: Serial (P1 and P2)
+T11: Approximate Entropy
+T12: Cumulative Sums (Forward and Reverse)
+T13: Random Excursions
+T14: Random Excursions Variant
+
+PGP_DRBG
+---------
+T01: 0.7949
+T02: 0.9058
+T03: 0.4789
+T04: 0.7700
+T05: 0.4064
+T06: 0.3670
+T07: 0.7203
+T08: 0.6806
+T09: 0.4992
+T10: P1=0.7524, P2=0.4789
+T11: 0.5499
+T12: Forward=0.2366, Reverse=0.6928
+T13: 0.3141
+T14: 0.1339
+
+AES_DRBG
+---------
+T01: 0.3998
+T02: 0.9804
+T04: 0.3898
+T05: 0.2589
+T06: 0.2126
+T07: 0.1239
+T08: 0.0392
+T09: 0.2966
+T10: P1=0.3797, P2=0.2679
+T11: 0.6082
+T12: Forward=0.6495, Reverse=0.6037
+T13: 0.1519
+T14: 0.0306
+
+Atmospheric_DRBG
+------------------
+T01: 0.5498
+T02: 0.8735
+T04: 0.6698
+T05: 0.9706
+T06: 0.1821
+T07: 0.1437
+T08: 0.5272
+T09: 0.1677
+T10: P1=0.7804, P2=0.7099
+T11: 0.9641
+T12: Forward=0.4215, Reverse=1.0000
+T13: 0.1000
+T14: 0.0798
+
+ChaCha20_DRBG
+--------------
+T01: 0.5419
+T02: 0.7871
+T03: 0.4375
+T04: 0.7809
+T05: 0.2166
+T06: 0.4450
+T07: 0.7289
+T08: 0.2448
+T09: 0.4184
+T10: P1=0.6144, P2=0.4377
+T11: 0.8571
+T12: Forward=0.3775, Reverse=0.9472
+T13: ERROR
+T14: ERROR
+
+RSA_DRBG
+---------
+T01: 0.2901
+T02: 0.6532
+T03: 0.2456
+T04: 0.6177
+T05: 0.4249
+T06: 0.7914
+T07: 0.5577
+T08: 0.8917
+T09: 0.1277
+T10: P1=0.2916, P2=0.2460
+T11: 0.6389
+T12: Forward=0.2324, Reverse=0.1971
+T13: ERROR
+T14: ERROR
+
+SHA_DRBG
+---------
+T01: 0.7188
+T02: 0.1377
+T03: 0.1150
+T04: 0.4317
+T05: 0.1473
+T06: 0.2828
+T07: 0.7441
+T08: 0.8985
+T09: 0.5312
+T10: P1=0.2707, P2=0.1150
+T11: 0.4774
+T12: Forward=0.7729, Reverse=1.0000
+T13: ERROR
+T14: ERROR
+
+dev_random_DRBG
+----------------
+T01: 0.1260
+T02: 0.5175
+T04: 0.1197
+T05: 0.0915
+T06: 0.1882
+T07: 0.1150
+T08: 0.2075
+T09: 0.1497
+T10: P1=0.2845, P2=0.6774
+T11: 0.4140
+T12: Forward=0.0350, Reverse=1.0000
+T13: ERROR
+T14: ERROR
+
+Music_Entropy_DRBG
+-------------------
+T01: 0.6426
+T02: 0.1794
+T04: 0.8824
+T05: 0.3262
+T06: 0.0155
+T07: 0.7819
+T08: 0.7794
+T09: 0.0758
+T10: P1=0.2249, P2=0.0961
+T11: 0.2482
+T12: Forward=0.2590, Reverse=0.7912
+T13: 0.2147
+T14: 0.2698
+
+--------------------------------------------------------------
+
+Hard Negatives
+
+PGP_Mirror_Corrupted_DRBG
+--------------------------
+T01: 0.9569
+T02: 0.8148
+T03: 0.9840
+T04: 0.1875
+T05: 0.7946
+T06: 0.2340
+T07: 0.5663
+T08: 0.8209
+T09: 0.8970
+T10: P1=0.9983, P2=0.9840
+T11: 0.6480
+T12: Forward=0.8538, Reverse=0.9483
+T13: 0.0231
+T14: 0.1940
+
+PGP_Repeated_Bits_Corrupted_DRBG
+--------------------------------
+T01: 0.6614
+T02: 0.7330
+T03: Failed
+T04: Failed
+T05: Failed
+T06: 0.3213
+T07: Failed
+T08: 0.2548
+T09: 0.6513
+T10: P1=0.7625, P2=0.5539
+T11: 0.3496
+T12: Forward=0.5493, Reverse=0.9301
+T13: Error
+T14: Error
+
+PGP_Rotated_Corrupted_DRBG
+---------------------------
+T01: 0.7505
+T02: 0.9456
+T03: 0.1663
+T04: 0.5229
+T05: 0.2024
+T06: 0.1044
+T07: 0.7673
+T08: 0.4688
+T09: Failed
+T10: P1=0.3648, P2=0.1664
+T11: 0.2677
+T12: Forward=0.5692, Reverse=1.0000
+T13: 0.2114
+T14: 0.0128
+
+Mirrored_DRBG
+--------------
+T01: 0.2020
+T02: 0.6822
+T03: Failed
+T04: 0.1024
+T05: 0.6974
+T06: 0.1601
+T07: 0.4018
+T08: 0.4534
+T09: 0.5203
+T10: P1=0.2074, P2=0.2179
+T11: 0.4830
+T12: Forward=0.2913, Reverse=0.6454
+T13: Error
+T14: Error
+
+--------------------------------------------------
+
+BAD Intentionally 
+
+Fixed_Pattern_DRBG
+-------------------
+T01: 1.0000
+T02: 1.0000
+T03: Failed
+T04: Failed
+T05: Failed
+T06: Failed
+T07: Failed
+T08: Failed
+T09: Failed
+T10: P1=Failed, P2=Failed
+T11: Failed
+T12: Forward=Failed, Reverse=Failed
+T13: Error
+T14: Failed
+
+High_Low_DRBG
+--------------
+T01: 1.0000
+T02: 1.0000
+T03: Failed
+T04: Failed
+T05: Failed
+T06: Failed
+T07: Failed
+T08: Failed
+T09: Failed
+T10: P1=Failed, P2=Failed
+T11: Failed
+T12: Forward=1.0000, Reverse=1.0000
+T13: Error
+T14: Failed
+
+Repeating_Byte_DRBG
+--------------------
+T01: Failed
+T02: Failed
+T03: Error
+T04: Failed
+T05: Failed
+T06: Failed
+T07: Failed
+T08: Failed
+T09: Failed
+T10: P1=Failed, P2=Failed
+T11: Failed
+T12: Forward=Failed, Reverse=Failed
+T13: Error
+T14: Error
+
+Runlength_DRBG
+---------------
+T01: 0.1432
+T02: Failed
+T03: Failed
+T04: Failed
+T05: Failed
+T06: Failed
+T07: Failed
+T08: 0.0195
+T09: 0.4956
+T10: P1=0.3304, P2=0.7887
+T11: 0.0771
+T12: Forward=0.0908, Reverse=0.5207
+T13: Failed
+T14: Failed
+
+Sawtooth_DRBG
+--------------
+T01: 0.8792
+T02: Failed
+T03: Failed
+T04: Failed
+T05: Failed
+T06: Failed
+T07: Failed
+T08: Failed
+T09: Failed
+T10: P1=0.9865, P2=0.9490
+T11: 0.9999
+T12: Forward=1.0000, Reverse=1.0000
+T13: Error
+T14: Error
+
+Triplet_Byte_DRBG
+------------------
+T01: Failed
+T02: Failed
+T03: Error
+T04: Failed
+T05: Failed
+T06: Failed
+T07: Failed
+T08: Failed
+T09: Failed
+T10: P1=Failed, P2=Failed
+T11: Failed
+T12: Forward=Failed, Reverse=Failed
+T13: Error
+T14: Error
+
+Zero_Biased_DRBG
+-----------------
+T01: Failed
+T02: Failed
+T03: Error
+T04: Failed
+T05: Failed
+T06: Failed
+T07: Failed
+T08: Failed
+T09: Failed
+T10: P1=Failed, P2=Failed
+T11: Failed
+T12: Forward=Failed, Reverse=Failed
+T13: Error
+T14: Error
