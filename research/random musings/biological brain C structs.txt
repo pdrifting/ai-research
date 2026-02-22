@@ -1,0 +1,64 @@
+// good source research video on neuron action potential
+// https://www.youtube.com/watch?v=BbUcWbtVjT4
+
+// inflow potential ions
+#define EXT_FIRE              0.02  // equillibrium +125mv purpose to short circuit +fire potential
+#define EXT_SLOW              0.01  // equillibrium +63mv  purpose to add to fire potential
+#define EXT_NEGATE           -0.01  // equillibrium -65mv  purpose to balance, or negate fire potental
+#define EXT_HIGH_GAIN         0.05  // forces a gate to fire
+#define EXT_HIGH_NEGATE      -0.05  // blocks a gate from firing
+#define EXT_INACTIVE          0.0   // gate not present, or closed permanently
+
+// neuron internal ions
+#define INT_RAISE             0.01  // equillibrium -93mv
+#define INT_LOWER            -0.01  // equillibrium +64mv
+
+// neuron state checks
+#define RESTING_POTENTIAL    -0.65 // mv
+#define FIRE_POTENTIAL       -0.55 // mv
+#define ACTION_VOLTAGE        0.40 // mv
+#define REFACTORY_MIN        -0.75 // if neuron is below this it cannot fire. true refactory.
+
+// gate types indexes
+#define EXT_INACTIVE             0
+#define EXT_FIRE                 1
+#define EXT_SLOW                 2
+#define EXT_NEGATE               3
+#define EXT_ABSOLUTE             4
+
+const float EXT_POTENTIAL_VALUES[] = {
+    EXT_INACTIVE,    // 0
+    EXT_FIRE,        // 1
+    EXT_SLOW,        // 2
+    EXT_NEGATE,      // 3
+    EXT_HIGH_GAIN,   // 4
+    EXT_HIGH_NEGATE  // 5
+};
+
+// event state
+#define RESTING                  0 // waiting to fire
+#define FIRED_STAGE1             1 // neuron is at action voltage, cannot be fired again at this stage
+#define FIRED_STAGE2             2 // absolute refactory state, cannot be fired again at this stage
+#define FIRED_STAGE3             3 // relative refactory state, the cell can refire here, but needs higher potential input
+
+typedef struct {
+    uint32_t source_neuron_id;
+    uint8_t  gate_type;         // EXT_FIRE, EXT_NEGATE, etc.
+    float    ion_concentration; // The "Battery" of the synapse (replaces weight)
+    float    recovery_rate;     // How fast the ion pool refills
+} Synapse;
+
+typedef struct {
+    float    local_potential;   // Potential of THIS specific branch
+    uint16_t synapse_count;
+    Synapse  synapses[8];       // Local cluster of inputs
+} Dendrite;
+
+typedef struct {
+    float    soma_potential;    // Cumulative voltage at the cell body
+    uint8_t  state;             // RESTING, FIRED_STAGE1, etc.
+    uint16_t dendrite_count;
+    Dendrite dendrites[16];     // Complex tree structure
+} Neuron;
+
+

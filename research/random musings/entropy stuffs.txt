@@ -1,0 +1,172 @@
+Anomaly family													NIST STS				Dieharder			SmallCrush	BigCrush	Our zoo detectors					Missing / to build
+Global bias, runs, simple correlations							Partial (freq, runs) 	Partial				Good		Strong		Covered								Threshold calibration under blends
+Periodicity/cadence (cache lines, stalls)						Weak					Moderate (FFT)		Moderate	Strong		Covered 							(FFT/ACF, block-phase)	Multi-scale harmonics with phase drift tracking
+Sliding-window mixture islands (TRNG+DRBG)						No						Weak				No			No			Covered 							(window entropy, JSD)	Robust EM estimators with CI across burst regimes
+Stride/interleave artifacts										No						Weak				No			No			Covered 							(stride recovery, jitter)	Blind stride inference under jitter and source swap
+XOR whitening coverage (partial/patterned)						No						Weak (collisions)	No			No			Covered 							(positional bias, coverage estimate)	Formal coverage bounds under patterned XOR
+Quantization steps and bit-loss									No						Weak				Weak		Moderate	Covered 							(bit-plane entropy, step-size)	Cross-modulus invariants; adaptive step-size estimators
+Rounding-mode bias (floor/nearest/stochastic)					No						No					Weak		Moderate	Covered 							(LSB/MSB asymmetry)	Stage-wise path attribution confidence
+Tail truncation in samplers										No						Weak				Weak		Moderate	Covered 							(tail occupancy, kurtosis)	Truncation threshold estimator with CI
+Transform leakage (NTT/DFT twiddle quantization)				No						Weak (spectral)		Weak		Moderate	Covered 							(domain invariants)	Leakage localization per stage; twiddle precision estimator
+Side-channel style jitter/secret coupling						No						No					No			No			Covered 							(coupling metrics, burst detectors)	Confidence bounds under low SNR coupling
+Implementation bugs (carry, saturation, wrap)					No						Weak				Moderate	Strong		Covered 							(path signatures)	Automated bug classifier with minimal features
+Cache/microarchitectural timing drift							No						Weak				Weak		Moderate	Covered 							(phase drift, block variance)	Drift-aware spectral ridge tracking
+TRNG biased/stuck bits											Partial (freq)			Partial				Good		Strong		Covered 							(bit-plane, stuck-rate)	Per-bit stuck map with robust aggregation
+Provenance-aware grading										No						No					No			No			Core to our framework				Policy-grade attestation and reproducible manifests
+Novel anomaly detection (unknown modes)							No						No					No			No			Embedding + novelty flag planned	Calibrated OOD detectors; false-positive control
+
+
+
+
+Formalized CUSUM drift detectors → to catch slow‑onset bias that global tests miss.
+
+Run‑length distribution KL divergence → to quantify deviations from geometric law, not just longest‑run.
+
+Distance correlation / Hoeffding’s D → to detect non‑linear dependencies beyond Pearson autocorrelation.
+
+Bit‑plane entropy scans across all families → we’ve used them in quantization tests, but they should be standardized across the suite.
+
+----------------------------------------------------------
+
+Generator registry (DRBGs)
+ID: DRBG-XXXX
+
+Family: e.g., Timing, Quantization, Blends, Transform, Implementation
+
+Name: Human-readable
+
+Parameters: Key knobs (brief)
+
+Status: Implemented / Pending / Needs revision
+
+Adversarial toggles: Short list
+
+Linked detectors: DET-IDs that should detect it
+
+Detector registry (statistical tests)
+ID: DET-XXXX
+
+Anomaly family: Bias/Runs/Correlation, Periodicity, Quantization, Blends, Transform, Side-channel, Implementation
+
+Method: Name + brief (e.g., CUSUM drift, KL run-length)
+
+Inputs: bitstream/coeff/byte-view
+
+Metrics: Primary score(s)
+
+Thresholds: Calibrated? (Yes/No)
+
+Validation: Datasets used; sensitivity notes
+
+Linked generators: DRBG-IDs used for calibration
+
+Immediate gap list to add to registries
+Missing generators (add to training spectrum)
+GEN-001: BiasDriftInjector
+
+Family: Bias/Runs
+
+Purpose: Slow-onset bias with phase-controlled drift.
+
+GEN-002: RunLengthShaper
+
+Family: Runs
+
+Purpose: Enforce non-geometric run-length profiles (excess short/long).
+
+GEN-003: NonlinearCorrelator
+
+Family: Correlation
+
+Purpose: Inject monotone-free dependencies (e.g., rank-based coupling).
+
+GEN-004: MixedPlaneCorrelator
+
+Family: Correlation
+
+Purpose: Cross-bit-plane correlations (LSB↔MSB positional coupling).
+
+Missing detectors (implement and calibrate)
+DET-101: CUSUM/Page–Hinkley drift bias
+
+Family: Bias
+
+Metrics: Max excursion; change onset; CI.
+
+DET-102: Run-length KL divergence vs geometric
+
+Family: Runs
+
+Metrics: KL, excess-mass at tails; longest-run z.
+
+DET-103: Distance correlation / Hoeffding’s D
+
+Family: Correlation
+
+Metrics: dCor/D for lags 1–64; BY correction.
+
+DET-104: Bit-plane mutual information grid
+
+Family: Correlation
+
+Metrics: I(bit_j; bit_k at lag ℓ) heatmaps; positional MI.
+
+Consolidation for bias/runs/correlation
+Existing coverage we have (assign IDs)
+DET-001: Monobit frequency and block frequency
+
+DET-002: Sliding-window entropy (windowed JSD)
+
+DET-003: Autocorrelation (Pearson, Ljung–Box)
+
+DET-004: Longest-run statistic
+
+DET-005: Overlapping pattern counts (chi-square)
+
+DET-006: Bit-plane entropy scan
+
+Mark these as implemented; link to current generators (TRNGBurstBlendDRBG, InterleaveMixDRBG, XORBlendDRBG, LowPrecisionTwiddleNTTDRBG, SideChannelPatternDRBG, SecretClockJitterDRBG).
+
+Roadmap and workflow
+Create registries (YAML/JSON) in repo
+
+generators.yaml: entries for all DRBGs; add GEN-001..004 as Pending.
+
+detectors.yaml: entries for DET-001..006 (Implemented) and DET-101..104 (Pending).
+
+Build missing generators
+
+Implement GEN-001..004 with provenance tags; add to generate_timing_spectrum and a new generate_bias_correlation_spectrum.
+
+Implement missing detectors
+
+Add DET-101..104 modules with standardized interfaces:
+
+detect(stream, q): returns score vector + internal CI, but only expose final risk in sealed runtime.
+
+Calibration passes
+
+Sweep parameters on GEN-001..004 and blended cases; generate ROC/PR, set thresholds; record in detectors.yaml (Calibration: Done).
+
+Fusion updates
+
+Integrate DET-101..104 into fusion layer; ensure concordance rules across embeddings (bit/byte/coeff).
+
+Attested runtime
+
+Bake registries’ hashes into build manifest; detector set frozen per policy version.
+
+Traceability and defense against training skew
+Cross-validation matrix: Each detector validated on generators it’s not designed for to check false positives (record in detectors.yaml).
+
+Holdout blends: Keep unseen blends to test generalization (zoo-agnostic checks).
+
+Ablation logs: For each detector, show sensitivity drop when key features are removed (internal only).
+
+Non-disclosure seals: Training corpora and feature maps never leave enclave; only risk grades and manifest hashes are exposed.
+
+
+
+
+1 2 3 4 5 6 7 8 9 10
+1 - 1 - - - 1 - 1 -

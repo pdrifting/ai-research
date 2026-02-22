@@ -1,0 +1,47 @@
+typedef struct {
+    uint64_t symbol_id;          
+    
+    const char* header_name;      // e.g., "vulkan.h"
+    const char* ret_type;        
+    const char* func_name;       
+    const char* args_list;       
+
+    uint32_t inc_dir_count;
+    const char* inc_dir[8];       // -I
+    uint32_t lib_dir_count;
+    const char* lib_dir[8];       // -L
+    uint32_t lib_name_count;
+    const char* lib_name[8];      // -l    
+
+    // --- DEPENDENCY CHAIN ---
+    uint32_t func_dep_count;
+    FunctionRegistryEntry* func_depends_on[32]; // Array of symbol_ids required by this one
+    uint32_t type_dep_count;
+    TypeRegistryEntry* type_depends_on[32];     // Array of typedef required
+    uint32_t def_dep_count;
+    DefineRegistryEntry* def_depends_on[256];   // Array of defines required
+        
+    struct {
+        uint16_t min_os_build;    // e.g., 19041 (Win10 2004)
+        uint16_t max_os_build;    // 0 for "No limit"
+        uint16_t min_api_version; 
+        uint32_t min_gl_ver;      // e.g., 450 for OpenGL 4.5
+        uint32_t min_gles_ver;    // e.g., 320 for GLES 3.2
+        uint64_t gpu_extensions;  // Bitmask of required extensions (e.g., Bindless)
+    } gates;
+
+    const char* compiler_flags;
+} FunctionRegistryEntry;
+
+typedef struct {
+  uint64_t symbol_id;
+  const char* typedef;
+} TypeRegistryEntry;
+
+typedef struct {
+  uint64_t symbol_id;
+  const char* define;             // might be a macro, or magic constant
+} DefineRegistryEntry;
+
+
+  
