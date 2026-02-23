@@ -110,7 +110,7 @@ Function Gate_XNOR(A As Single, B As Single) As Single
 End Function
 ```
 
-#### Interpretation
+### Interpretation
 
 These ensembles demonstrate:
 - non‑linear separability
@@ -152,7 +152,7 @@ Function Gate_LT(A As Single, B As Single) As Single
 End Function
 ```
 
-#### Interpretation
+### Interpretation
 
 This proves:
 - composability
@@ -352,7 +352,7 @@ This failure was demonstrated repeatedly across dozens of dated research experim
 
 Despite extensive attempts, gradient descent could not converge to the brute‑forced solutions that were later found manually.  This failure is not incidental, it is a structural flaw in current AI model designs.
 
-## 7.1 Boolean Gates Require Extremely Sharp Decision Boundaries
+### 7.1 Boolean Gates Require Extremely Sharp Decision Boundaries
 
 The brute‑forced weights for AND, OR, NAND, NOR, and NOT all share a key property:
 - very large magnitude weights (≈ 15–100)
@@ -369,7 +369,7 @@ Gradient descent cannot reliably reach these regions because:
 
 This is a known limitation of smooth activations attempting to approximate discrete logic.
 
-## 7.2 XOR/XNOR Require Non‑Linear Ensembles With Precise Symmetry
+### 7.2 XOR/XNOR Require Non‑Linear Ensembles With Precise Symmetry
 
 The brute‑forced XOR/XNOR solutions require:
 - three neurons
@@ -395,7 +395,7 @@ Even with:
 
 This prevents traditional and custom modals based on known model designs could not reliably converge.
 
-## 7.3 Gradient Descent Prefers Smooth, Probabilistic Solutions
+### 7.3 Gradient Descent Prefers Smooth, Probabilistic Solutions
 
 Boolean gates require hard, discrete boundaries.
 
@@ -416,7 +416,7 @@ These regions:
 
 PyTorch optimizers simply do not explore these regions naturally.
 
-## 7.4 The Loss Landscape Contains “Dead Zones” Around Boolean Solutions
+### 7.4 The Loss Landscape Contains “Dead Zones” Around Boolean Solutions
 
 Experiments showed that:
 - near the correct Boolean weights, gradients approach zero
@@ -429,7 +429,7 @@ This is why brute‑forcing succeeded where training failed:
 - gradient descent only explores local slopes
 - Boolean logic requires global search, not local optimization.
 
-## 7.5 PyTorch Training Collapses Under Binary Truth‑Table Targets
+### 7.5 PyTorch Training Collapses Under Binary Truth‑Table Targets
 
 When training on truth tables:
 - the model often converges to trivial solutions
@@ -452,7 +452,7 @@ This was confirmed across:
 
 None reliably converged.
 
-## 7.6 Summary of Why PyTorch Cannot Learn These Gates Reliably
+### 7.6 Summary of Why PyTorch Cannot Learn These Gates Reliably
 
 <ol type="a">
   <li>Sigmoid saturation prevents reaching extreme weights.</li>
@@ -464,7 +464,7 @@ None reliably converged.
   <li>Binary truth tables create unstable training dynamics.</li>
 </ol>
 
-## 7.7 Inability of a Single Model to Represent All Boolean Gates Simultaneously
+### 7.7 Inability of a Single Model to Represent All Boolean Gates Simultaneously
 
 An additional structural limitation became clear during the pre‑alpha research experiments (documented in source files throughout the src/ directory), that even when a PyTorch model successfully learned one Boolean gate, no configuration was found that could represent all Boolean gates within a single shared parameter space.
 
@@ -583,3 +583,4 @@ The alpha engine solves this by:
 Instead of trying to force all gates into one weight space, the alpha engine encodes logic in the physical configuration of synapses and dendrites, not in shared parameters.
 
 This is the conceptual breakthrough that makes the alpha engine possible.
+
