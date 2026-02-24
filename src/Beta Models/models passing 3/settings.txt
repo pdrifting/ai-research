@@ -1,0 +1,7 @@
+const INPUT_SIZE: usize = 16384;
+const LATTICE_WIDTH: usize = 1024;
+const MAX_SYNAPSES: usize = 12;
+const MAX_DELAY: u8 = 16;
+const SIM_TICKS: usize = 8;
+const EPOCHS: usize = 15;
+const TOTAL_BITS: usize = 1000000;
