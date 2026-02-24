@@ -908,8 +908,8 @@ impl<'a> RandomTests<'a> {
 		//println!("den p={:.10}", den);
 		//let tP = erfc(num / den);
 		//println!("P p={:.10}", tP);
-        let p_value = erfc((num / den).abs());
-		//let p_value = erfc(num / den);
+        //let p_value = erfc((num / den).abs());
+		let p_value = erfc(num / den);
 		//println!("P.abs p={:.10}", p_value);
         Ok(RunsResult { p_value, n, pi_obs, tau, v_obs })
     }
@@ -1581,83 +1581,142 @@ pub fn random_excursions_variant_test(&self) -> Vec<RandomExcursionsVariantResul
     results
 }
 
-  pub fn all_core_pass(&self, alpha: f64) -> (bool, usize, usize) {
-    println!("Starting tests...");
-	let f0      = self.frequency().ok().unwrap();
-    //println!("done frequency");
-	let bf0     = self.block_frequency(128).ok().unwrap();
-    //println!("done block");
-	let runs0   = self.runs().ok().unwrap();
-    //println!("done runs");
-	let lr0     = self.longest_run_of_ones().ok().unwrap();
-    //println!("done longest run of ones");
-	let rank0   = self.binary_matrix_rank().ok().unwrap();
-    //println!("done binary matrix");
-	let apen0   = self.approximate_entropy(2).ok().unwrap();
-    //println!("done approximate entropy");
-	let serial0 = self.serial(2).ok().unwrap();
-    let cusum0  = self.cumulative_sums().ok().unwrap();
-    let dft0    = self.dft_spectral_test().ok().unwrap();
-    let nonov0  = self.non_overlapping_template_test(9, TEMPLATE_9).ok().unwrap();
-    let ov0     = self.overlapping_template_test().ok().unwrap();
-    let um0     = self.universal_maurer_test().ok().unwrap();
-    let lc0     = self.linear_complexity_test(1000).ok().unwrap();
-    let rex     = self.random_excursions_test();
-    let rexv    = self.random_excursions_variant_test();
+    pub fn all_core_pass(&self, alpha: f64) -> bool {
+        //println!("Entered All Core Tests");
+        //println!("Entered Frequency");
+		let f0      = self.frequency().ok();
+        //println!("Entered Block Frequency");
+		let bf0     = self.block_frequency(128).ok();
+        //println!("Entered Runs");
+		let runs0   = self.runs().ok();
+        //println!("Entered Longest Run of Ones");
+		let lr0     = self.longest_run_of_ones().ok();
+        //println!("Entered Binary Matrix");
+		let rank0   = self.binary_matrix_rank().ok();
+        //println!("Entered Entropy");
+		let apen0   = self.approximate_entropy(2).ok();
+        //println!("Entered Longest Serial Runs");
+		let serial0 = self.serial(2).ok();
+        //println!("Entered Cumulative Sums");
+		let cusum0  = self.cumulative_sums().ok();
+        //println!("Entered DFT Spectral");
+		let dft0    = self.dft_spectral_test().ok();
+        //println!("Entered Non-Overlapping");
+		let nonov0  = self.non_overlapping_template_test(9, TEMPLATE_9).ok();
+        //println!("Entered Overlapping");
+		let ov0     = self.overlapping_template_test().ok();
+        //println!("Entered Universal Maurer");
+		let um0     = self.universal_maurer_test().ok();
+        //println!("Entered Linear Complexity");
+		let lc0     = self.linear_complexity_test(1000).ok();
+        //println!("Entered Random Excursion");
+		let rex      = self.random_excursions_test();
+		//println!("Entered Random Excursion Variant");
+        let rexv     = self.random_excursions_variant_test();
 
-    let mut failed_count = 0;
-    let mut total_tests = 0;
+        //println!("Unwrapping test results");
+        let f      = f0.unwrap();
+        let bf     = bf0.unwrap();
+        let runs   = runs0.unwrap();
+        let lr     = lr0.unwrap();
+        let rank   = rank0.unwrap();
+        let apen   = apen0.unwrap();
+        let serial = serial0.unwrap();
+        let cusum  = cusum0.unwrap();
+        let dft    = dft0.unwrap();
+        let nonov  = nonov0.unwrap();
+        let ov     = ov0.unwrap();
+        let um     = um0.unwrap();
+        let lc     = lc0.unwrap();
 
-    macro_rules! check {
-        ($p_val:expr, $name:expr) => {
-            total_tests += 1;
-            let p = $p_val;
-            if p.is_nan() || p < alpha {
-				println!("FAIL: {} (p={:.10})", $name, p); 
-                failed_count += 1;
-            }
-        };
+        // --- Dump all p-values for comparison against NIST ---
+        //println!("================= NIST CORE TEST DEBUG DUMP =================");
+        //let n = self.bits.len();
+        //let ones = self.bits.iter().filter(|&&b| b == 1).count();
+        //let zeros = n - ones;
+        //println!("[DEBUG] n={} ones={} zeros={} diff={}", n, ones, zeros, ones as i64 - zeros as i64);
+
+        //println!("[DEBUG] Frequency                  p={:.10}", f.p_value);
+        //println!("[DEBUG] Block Frequency            p={:.10}", bf.p_value);
+        //println!("[DEBUG] Runs                       p={:.10}", runs.p_value);
+        //println!("[DEBUG] Longest Run                p={:.10}", lr.p_value);
+        //println!("[DEBUG] Binary Matrix Rank         p={:.10}", rank.p_value);
+        //println!("[DEBUG] Approximate Entropy        p={:.10}", apen.p_value);
+        //println!("[DEBUG] Serial p1                  p={:.10}", serial.p_value1);
+        //println!("[DEBUG] Serial p2                  p={:.10}", serial.p_value2);
+        //println!("[DEBUG] Cumulative Sums (forward)  p={:.10}", cusum.p_value_fwd);
+        //println!("[DEBUG] Cumulative Sums (reverse)  p={:.10}", cusum.p_value_rev);
+        //println!("[DEBUG] DFT Spectral               p={:.10}", dft.p_value);
+        //println!("[DEBUG] Non-Overlapping Template   p={:.10}", nonov.p_value);
+        //println!("[DEBUG] Overlapping Template       p={:.10}", ov.p_value);
+        //println!("[DEBUG] Universal Maurer           p={:.10}", um.p_value);
+        //println!("[DEBUG] Linear Complexity          p={:.10}", lc.p_value);
+
+        //println!("[DEBUG] Random Excursions (state, p):");
+        //for r in &rex {
+        //    println!("[DEBUG]   RE  x={}  p={:.10}", r.x, r.p_value);
+        //}
+
+        //println!("[DEBUG] Random Excursions Variant (state, p):");
+        //for r in &rexv {
+        //    println!("[DEBUG]   REV x={}  p={:.10}", r.x, r.p_value);
+        //}
+        //println!("=============================================================");
+
+        let mut ok = true;
+        macro_rules! check {
+            ($p_val:expr, $name:expr) => {
+                let p = $p_val;
+                let alpha = 0.01;
+                let upper_cap = 0.99; // Reject "too perfect" distributions
+                let capped = p < alpha || p > upper_cap;
+				let is_out_of_bounds = p.is_nan() || capped;  
+                if is_out_of_bounds { 
+                    //println!("FAIL: {} (p={:.10})", $name, p); 
+                    ok = false; 
+                }
+           };
+        }
+		/*
+        check!(f.p_value         >= alpha, "Frequency");
+        check!(bf.p_value        >= alpha, "Block Frequency");
+        check!(runs.p_value      >= alpha, "Runs");
+        check!(lr.p_value        >= alpha, "Longest Run");
+        check!(rank.p_value      >= alpha, "Binary Matrix Rank");
+        check!(apen.p_value      >= alpha, "Approximate Entropy");
+        check!(serial.p_value1   >= alpha, "Serial p1");
+        check!(serial.p_value2   >= alpha, "Serial p2");
+        check!(cusum.p_value_fwd >= alpha, "Cumulative Sums (forward)");
+        check!(cusum.p_value_rev >= alpha, "Cumulative Sums (reverse)");
+        check!(dft.p_value       >= alpha, "DFT Spectral");
+        check!(nonov.p_value     >= alpha, "Non-Overlapping Template");
+        check!(ov.p_value        >= alpha, "Overlapping Template");
+        check!(um.p_value        >= alpha, "Universal Maurer");
+        check!(lc.p_value        >= alpha, "Linear Complexity");
+        for r in &rex  { if r.p_value < alpha { println!("FAIL: Random Excursions (state {})", r.x); ok = false; } }
+        for r in &rexv { if r.p_value < alpha { println!("FAIL: Random Excursions Variant (state {})", r.x); ok = false; } }
+		*/
+		
+		check!(f.p_value        , "Frequency");
+        check!(bf.p_value       , "Block Frequency");
+        check!(runs.p_value     , "Runs");
+        check!(lr.p_value       , "Longest Run");
+        check!(rank.p_value     , "Binary Matrix Rank");
+        check!(apen.p_value     , "Approximate Entropy");
+        check!(serial.p_value1  , "Serial p1");
+        check!(serial.p_value2  , "Serial p2");
+        check!(cusum.p_value_fwd, "Cumulative Sums (forward)");
+        check!(cusum.p_value_rev, "Cumulative Sums (reverse)");
+        check!(dft.p_value      , "DFT Spectral");
+        check!(nonov.p_value    , "Non-Overlapping Template");
+        check!(ov.p_value       , "Overlapping Template");
+        check!(um.p_value       , "Universal Maurer");
+        check!(lc.p_value       , "Linear Complexity");
+		
+		for r in &rex  { if r.p_value < alpha { ok = false; } }
+        for r in &rexv { if r.p_value < alpha { ok = false; } }		
+        ok
     }
-
-    check!(f0.p_value, "Frequency");
-    check!(bf0.p_value, "Block Frequency");
-    check!(runs0.p_value, "Runs");
-    check!(lr0.p_value, "Longest Run");
-    check!(rank0.p_value, "Binary Matrix Rank");
-    check!(apen0.p_value, "Approximate Entropy");
-    check!(serial0.p_value1, "Serial p1");
-    check!(serial0.p_value2, "Serial p2");
-    check!(cusum0.p_value_fwd, "Cumulative Sums (forward)");
-    check!(cusum0.p_value_rev, "Cumulative Sums (reverse)");
-    check!(dft0.p_value, "DFT Spectral");
-    check!(nonov0.p_value, "Non-Overlapping Template");
-    check!(ov0.p_value, "Overlapping Template");
-    check!(um0.p_value, "Universal Maurer");
-    check!(lc0.p_value, "Linear Complexity");
-
-    let mut rexb = false;
-	let mut rexbc = 0;
-	total_tests += 1;
-    for r in &rex  { if r.p_value < alpha { rexb = true; rexbc += 1; } }
-    
-	if rexb == true {
-		println!("FAIL: Random Excursions (states {})", rexbc);
-		failed_count += 1;
-	}
-	
-	let mut rexvb = false;
-	let mut rexvbc = 0;
-	total_tests += 1;
-	for r in &rexv { if r.p_value < alpha { rexvb = true; rexvbc += 1; } }
-
-    if rexvb == true {
-		println!("FAIL: Random Excursions variant (states {})", rexvbc);
-		failed_count += 1;
-	}
-
-    let passed = failed_count == 0;
-    (passed, failed_count, total_tests)
-  }
 }
 
 const INPUT_SIZE: usize = 16384;
@@ -1720,61 +1779,42 @@ impl IonModel {
         IonModel { hidden }
     }
 
-	fn tick(&mut self, input: &[u8], output: &mut [u8]) {
-		for i in 0..LATTICE_WIDTH {
-			// We use a temporary scope or copy values to avoid double-borrowing self.hidden
-			let (gate_type, idx_a_raw) = {
-				let n = &self.hidden[i];
-				(n.gate_type, n.dendrites[0].source_idx as usize)
-			};
-        
-			let idx_b_raw = self.hidden[i].dendrites[1].source_idx as usize;
+    fn tick(&mut self, input: &[u8], output: &mut [u8]) {
+        for i in 0..LATTICE_WIDTH {
+            let n = &self.hidden[i];
+            let idx_a = n.dendrites[0].source_idx as usize;
+            let idx_b = (n.dendrites[1].source_idx as usize) % LATTICE_WIDTH;
 
-			// RESOLVE INPUT A: Can be External Input or Internal Hidden Gate
-			let a = if idx_a_raw < INPUT_SIZE {
-				input[idx_a_raw]
-			} else {
-				// It's a "Hot Gate" from our internal lattice!
-				let internal_idx = (idx_a_raw - INPUT_SIZE) % LATTICE_WIDTH;
-				self.hidden[internal_idx].state
-			};
+            let a = input[idx_a];
+            let b = self.hidden[idx_b].state;
 
-			// RESOLVE INPUT B: Same logic for consistency
-			let b = if idx_b_raw < INPUT_SIZE {
-				input[idx_b_raw]
-			} else {
-				let internal_idx = (idx_b_raw - INPUT_SIZE) % LATTICE_WIDTH;
-				self.hidden[internal_idx].state
-			};
+            let gate_out = match n.gate_type {
+                GateType::XOR   => a ^ b,
+                GateType::NAND  => if a == 1 && b == 1 { 0 } else { 1 },
+                GateType::OR    => a | b,
+                GateType::AND   => a & b,
+                GateType::NOR   => if a == 0 && b == 0 { 1 } else { 0 },
+            };
 
-			let gate_out = match gate_type {
-				GateType::XOR  => a ^ b,
-				GateType::NAND => if a == 1 && b == 1 { 0 } else { 1 },
-				GateType::OR   => a | b,
-				GateType::AND  => a & b,
-				GateType::NOR  => if a == 0 && b == 0 { 1 } else { 0 },
-			};
+            let mut flux = 0u8;
+            let neuron = &mut self.hidden[i];
+            for s in neuron.dendrites.iter_mut() {
+                if gate_out == 1 { s.signal_active = 1; }
 
-			// ... rest of your signal propagation and timer logic remains the same ...
-			let mut flux = 0u8;
-			let neuron = &mut self.hidden[i];
-			for s in neuron.dendrites.iter_mut() {
-				if gate_out == 1 { s.signal_active = 1; }
-
-				if s.signal_active == 1 {
-					if s.timer >= s.delay {
-						flux ^= 1;
-						s.timer = 0;
-						s.signal_active = 0;
-					} else {
-						s.timer += 1;
-					}
-				}
-			}
-			neuron.state ^= flux & 1;
-			output[i] = neuron.state;
-		}
-	}
+                if s.signal_active == 1 {
+                    if s.timer >= s.delay {
+                        flux ^= 1;
+                        s.timer = 0;
+                        s.signal_active = 0;
+                    } else {
+                        s.timer += 1;
+                    }
+                }
+            }
+            neuron.state ^= flux & 1;
+            output[i] = neuron.state;
+        }
+    }
 
     fn save_snapshot(&self, filename: &str) -> bincode::Result<()> {
         // bincode::Result is compatible with std::io::Error
@@ -1785,15 +1825,7 @@ impl IonModel {
 	
 	pub fn load_snapshot(filename: &str) -> bincode::Result<Self> {
         let file = File::open(filename).map_err(bincode::Error::from)?;
-        bincode::deserialize_from(file)        
-    }
-
-    pub fn warmup(&mut self, ticks: usize) {
-        let input = vec![0u8; INPUT_SIZE];
-        let mut sink = vec![0u8; LATTICE_WIDTH];
-        for _ in 0..ticks {
-            self.tick(&input, &mut sink);
-        }
+        bincode::deserialize_from(file)
     }
 
     /// Generates bits specifically for the high-volume battery.
@@ -1821,84 +1853,31 @@ impl IonModel {
         }
         bits
     }
-	
-	pub fn generate_block_raw_audit(&mut self, size: usize, audit: &mut HealthAudit) -> Vec<u8> {
-    let input = vec![0u8; INPUT_SIZE];
-    let mut bits = Vec::with_capacity(size);
+}
+
+fn generate_and_test(model: &mut IonModel, mode: u8, alpha: f64) -> (bool, Vec<u8>) {    
+	let mut input = vec![0u8; INPUT_SIZE];
+    match mode {
+        1 => input.fill(1),
+        2 => { for i in (INPUT_SIZE / 2)..INPUT_SIZE { input[i] = 1; } },
+        3 => { for i in 0..(INPUT_SIZE / 2) { input[i] = 1; } },
+        _ => (),
+    }
+
+    let mut bits = Vec::with_capacity(TOTAL_BITS);
     let mut output_bits = vec![0u8; LATTICE_WIDTH];
     
-    // Track previous state for flip-rate auditing
-    let mut prev_state: Vec<u8> = self.hidden.iter().map(|n| n.state).collect();
-
-while bits.len() < size {
-    self.tick(&input, &mut output_bits);
-    audit.record(&prev_state, &output_bits);
-    
-    // Use the state of a specific gate to "jitter" the harvest count
-    // This makes the sampling rate itself a chaotic variable
-    let jitter_factor = (output_bits[0] as usize) + (output_bits[1024] as usize); 
-    let harvest_count = 800 + (jitter_factor % 200); // Harvest between 800 and 1000
-
-    for i in 0..harvest_count {
-        if bits.len() >= size { break; }
-        bits.push(output_bits[i]);
-    }
-}
-    bits
-}
-
-pub fn generate_block_prime_stride(&mut self, size: usize, audit: &mut HealthAudit) -> Vec<u8> {
-    let mut bits = Vec::with_capacity(size);
-    
-	let mut output_bits = vec![0u8; LATTICE_WIDTH];
-    
-	let mut sIndex = 0;
-	let stride: [usize; 6] = [31,17,29,23,11,19];
-	let mut sCurrent = stride[sIndex];
-	let mut scIndex = 0;
-	let sCounter: [usize; 13] = [5,13,7,11,13,5,7,19,23,11,31,17,19];
-    let mut sCurrentCount = sCounter[scIndex];
-	
-	let mut current_idx = 0;
-    	
-    let mut prev_state: Vec<u8> = self.hidden.iter().map(|n| n.state).collect();
-    while bits.len() < size {
-        self.tick(&vec![0u8; INPUT_SIZE], &mut output_bits);
-        audit.record(&prev_state, &output_bits);
-
-        //let mut isFirst = true;
-		//let mut isSecond = true;
-        for _ in 0..125 { // Extract fewer bits per tick to ensure higher quality
-            if bits.len() >= size { break; }
-
-			bits.push(output_bits[current_idx]);
-			/*
-			for i in 0..125 {
-                if bits.len() >= size { break; }
-                let b = output_bits[i] ^ output_bits[i + 250] ^ output_bits[i + 500] ^ output_bits[i + 750];
-                bits.push(b);
-            }
-			*/
-			
-			sCurrentCount -= 1;
-			if sCurrentCount == 0 {
-			   scIndex += 1;
-               if scIndex >= 11 { scIndex = 0; }
-			   sCurrentCount = sCounter[scIndex];
-			   
-			   sIndex +=1;
-			   if sIndex >= 5 { sIndex = 0; }
-			   sCurrent = stride[sIndex];
-			}
-						
-            current_idx = (current_idx + sCurrent) % LATTICE_WIDTH;
-			//current_idx = (current_idx) % LATTICE_WIDTH;
+    while bits.len() < TOTAL_BITS {
+        model.tick(&input, &mut output_bits);
+        for i in 0..125 {
+            if bits.len() >= TOTAL_BITS { break; }
+            let b = output_bits[i] ^ output_bits[i + 250] ^ output_bits[i + 500] ^ output_bits[i + 750];
+            bits.push(b);
         }
     }
-    bits
-}
-	
-	
+
+    let nist = RandomTests::new(&bits);
+    (nist.all_core_pass(alpha), bits)
 }
 
 struct HealthAudit {
@@ -1920,147 +1899,36 @@ impl HealthAudit {
         self.total_ticks += 1;
     }
 
-	fn report(&self) -> u64 {
-		if self.total_ticks == 0 {
-			println!("HealthAudit: No ticks recorded yet.");
-			return LATTICE_WIDTH as u64; 
-		}
-
-		let mut thermal_profile = self.flip_counts.iter()
-			.map(|&c| (c as f64 / self.total_ticks as f64) * 100.0)
-			.collect::<Vec<f64>>();
-    
-		// Use total_cmp to avoid the NaN panic
-		thermal_profile.sort_by(|a, b| a.total_cmp(b));
-   
-		println!("--- Thermal Equilibrium Report ---");
-		// Safe indexing with guards
-		if let (Some(cold), Some(med), Some(hot)) = (
-			thermal_profile.first(),
-			thermal_profile.get(LATTICE_WIDTH / 2),
-			thermal_profile.last()
-		) {
-			println!("Coldest Gate: {:.2}% flip rate", cold);
-			println!("Median Gate:  {:.2}% flip rate", med);
-			println!("Hottest Gate: {:.2}% flip rate", hot);
-		}
-    
-		let dead_gates = thermal_profile.iter().filter(|&&r| r < 0.01).count();
-		println!("Dead Gates (Stuck): {} / {}", dead_gates, LATTICE_WIDTH);
-    
-		dead_gates as u64
-	}
-}
-
-fn migrate_zombies(model: &mut IonModel, audit: &HealthAudit) {
-    let mut rng = rand::thread_rng();
-    
-    // Identify "Hot" internal gates to tether the zombies to
-    let hot_gates: Vec<u16> = audit.flip_counts.iter()
-        .enumerate()
-        .filter(|&(_, count)| *count > 0)
-        .map(|(i, _)| i as u16)
-        .collect();
-
-    for i in 0..LATTICE_WIDTH {
-        if audit.flip_counts[i] == 0 {            
-            let r = rng.gen_range(0..=2);
-			if r == 0 {
-				model.hidden[i].gate_type = GateType::NOR;
-			} else {
-			    model.hidden[i].gate_type = GateType::XOR;
-            }
-            // 2. Connectivity Migration: 
-            // Move dendrites from Input Pins to Internal Gates
-            for d_idx in 0..MAX_SYNAPSES {
-                // If it was looking at an input pin, move it to a hot gate
-                if model.hidden[i].dendrites[d_idx].source_idx < INPUT_SIZE as u16 {
-                    if !hot_gates.is_empty() {
-                        let new_target = hot_gates[rng.gen_range(0..hot_gates.len())];
-                        model.hidden[i].dendrites[d_idx].source_idx = new_target + INPUT_SIZE as u16;
-                    }
-                }
-            }
-        }
-    }
-}
-
-fn analyze_zombie_topology(model: &IonModel, audit: &HealthAudit) {
-    println!("\n--- Deep-Dive: Zombie Topology Report ---");
-    
-    let mut dead_gate_indices = Vec::new();
-    for (i, &count) in audit.flip_counts.iter().enumerate() {
-        if count == 0 { dead_gate_indices.push(i); }
-    }
-
-    for &z_idx in dead_gate_indices.iter().take(10) { // Let's look at the first 10
-        let zombie = &model.hidden[z_idx];
-        println!("\nZombie Node [{}] | Type: {:?}", z_idx, zombie.gate_type);
+    fn report(&self) {
+        let mut thermal_profile = self.flip_counts.iter()
+            .map(|&c| (c as f64 / self.total_ticks as f64) * 100.0)
+            .collect::<Vec<f64>>();
         
-        for (d_idx, syn) in zombie.dendrites.iter().enumerate() {
-            let src = syn.source_idx as usize;
-            
-            // Check if the source is an Input Pin or another Hidden Gate
-            if src < INPUT_SIZE {
-                println!("  dendrite[{}]: Connected to Input Pin {}", d_idx, src);
-            } else {
-                let gate_src = src % LATTICE_WIDTH;
-                let src_flips = audit.flip_counts[gate_src];
-                let src_status = if src_flips == 0 { "DEAD" } else { "ACTIVE" };
-                
-                println!(
-                    "  dendrite[{}]: Connected to Gate {} ({}) | Source Activity: {} flips", 
-                    d_idx, gate_src, src_status, src_flips
-                );
-            }
-        }
+        thermal_profile.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        
+        println!("--- Thermal Equilibrium Report ---");
+        println!("Coldest Gate: {:.2}% flip rate", thermal_profile[0]);
+        println!("Median Gate:  {:.2}% flip rate", thermal_profile[LATTICE_WIDTH / 2]);
+        println!("Hottest Gate: {:.2}% flip rate", thermal_profile[LATTICE_WIDTH - 1]);
+        
+        let dead_gates = thermal_profile.iter().filter(|&&r| r < 1.0).count();
+        println!("Dead Gates (Stuck): {} / {}", dead_gates, LATTICE_WIDTH);
     }
 }
-
-
 
 fn run_exhaustion_test(model_path: &str) {
-    let mut model = IonModel::load_snapshot(model_path).unwrap();	
+    let mut model = IonModel::load_snapshot(model_path).unwrap();
     let mut seen_hashes = HashSet::new();
     let mut audit = HealthAudit::new();
     let mut block_count = 0;
     let mut pass_count = 0;
-
-/*
-10200
-400
-
-[Block 600] Pass Rate: 96.08%
---- Thermal Equilibrium Report ---
-Coldest Gate: 49.27% flip rate
-Median Gate:  49.70% flip rate
-Hottest Gate: 50.26% flip rate
-Dead Gates (Stuck): 0 / 2048
-*/
-
-    let run_to_block = 600;
-	let base_failed = 400;
-	let base_run    = 10200;
 
     println!("--- Launching Exhaustion & Health Audit: {} ---", model_path);
-    model.warmup(5000);
 
-    //let bits = model.generate_block_with_audit(10_000_000, &mut audit);
-	//migrate_zombies(&mut model,&audit);
-	//let bits = model.generate_block_with_audit(10_000_000, &mut audit);
-	//let dead_count = audit.report();
-	//if dead_count > 0 {
-	//	println!("dead count in report >0 reseed.");
-    //   return;
-	//}
-	
-	let mut total_tests_run = 0;
-	let mut total_tests_failed = 0;
-	
     loop {
         // Generate with Audit tracking
-        let bits = model.generate_block_prime_stride(2_500_000, &mut audit);
-		
+        let bits = model.generate_block_with_audit(10_000_000, &mut audit);
+        
         // Hash Check
         let mut hasher = Sha256::new();
         hasher.update(&bits);
@@ -2073,19 +1941,12 @@ Dead Gates (Stuck): 0 / 2048
         }
 
         // Integrity Check
-        let (is_perfect, fails, total) = RandomTests::new(&bits).all_core_pass(0.01);
-        total_tests_run += total;
-		total_tests_failed += fails;
-        println!("{}", total_tests_run);
-        println!("{}", total_tests_failed);
-
-        if total_tests_failed > base_failed {
-			println!("Model is doing bad, tests failed more than baseline...");
-			break;
-		}
+        if Nist::new(&bits).all_core_pass(0.01) {
+            pass_count += 1;
+        }
 
         block_count += 1;
-        let pass_rate = 100.0 as f64 - ((total_tests_failed as f64 / total_tests_run as f64) * 100.0);
+        let pass_rate = (pass_count as f64 / block_count as f64) * 100.0;
         
         // Combined Reporting
         if block_count % 10 == 0 {
@@ -2093,181 +1954,69 @@ Dead Gates (Stuck): 0 / 2048
             audit.report(); // Prints thermal equilibrium and dead gate count
         }
 
-        println!("Integrity report: Pass rate {:.2}%", pass_rate);
-        audit.report();
-
-        if block_count >= 600 {
-            if pass_rate > 96.08 {
-				 let snap_name = format!("candidate_{}.snap",total_tests_failed);
-			     model.save_snapshot(&snap_name);				 
-			}
-			return;
-		}			
-    }
-}
-
-fn run_exhaustion_test_raw(model_path: &str) {
-    let mut model = IonModel::load_snapshot(model_path).unwrap();	
-    let mut seen_hashes = HashSet::new();
-    let mut audit = HealthAudit::new();
-    let mut block_count = 0;
-    let mut pass_count = 0;
-
-/*
-10200
-400
-
-[Block 600] Pass Rate: 96.08%
---- Thermal Equilibrium Report ---
-Coldest Gate: 49.27% flip rate
-Median Gate:  49.70% flip rate
-Hottest Gate: 50.26% flip rate
-Dead Gates (Stuck): 0 / 2048
-*/
-
-    let run_to_block = 600;
-	let base_failed = 400;
-	let base_run    = 10200;
-
-    println!("--- Launching RAW Exhaustion & Health Audit: {} ---", model_path);
-    model.warmup(5000);
-
-    let bits = model.generate_block_prime_stride(10_000_000, &mut audit);
-	migrate_zombies(&mut model,&audit);
-	let bits = model.generate_block_prime_stride(10_000_000, &mut audit);
-	let dead_count = audit.report();
-	if dead_count > 0 {
-		println!("dead count in report >0 reseed.");
-        return;
-	}
-	
-	let mut total_tests_run = 0;
-	let mut total_tests_failed = 0;
-	
-    loop {
-        // Generate with Audit tracking
-        let bits = model.generate_block_prime_stride(2_500_000, &mut audit);
-		
-        // Hash Check
-        let mut hasher = Sha256::new();
-        hasher.update(&bits);
-        let hash = format!("{:x}", hasher.finalize());
-        
-        if !seen_hashes.insert(hash) {
-            println!("CRITICAL: Hash Collision at block {}!", block_count);
-            audit.report(); // Show state at time of death
+        if pass_rate < 85.0 && block_count > 20 {
+            println!("Integrity Failure: Pass rate {:.2}% fell below 85%", pass_rate);
+            audit.report();
             break;
         }
-
-        // Integrity Check
-        let (is_perfect, fails, total) = RandomTests::new(&bits).all_core_pass(0.01);
-        total_tests_run += total;
-		total_tests_failed += fails;
-        println!("{}", total_tests_run);
-        println!("{}", total_tests_failed);
-
-        if total_tests_failed > base_failed {
-			println!("Model is doing bad, tests failed more than baseline...");
-			break;
-		}
-
-        block_count += 1;
-        let pass_rate = 100.0 as f64 - ((total_tests_failed as f64 / total_tests_run as f64) * 100.0);
-        
-        // Combined Reporting
-        if block_count % 10 == 0 {
-            println!("\n[Block {}] Pass Rate: {:.2}%", block_count, pass_rate);
-            audit.report(); // Prints thermal equilibrium and dead gate count
-        }
-
-        println!("Integrity report: Pass rate {:.2}%", pass_rate);
-        audit.report();
-
-        if block_count >= 600 {
-            if pass_rate > 96.08 {
-				 let snap_name = format!("candidate_{}.snap",total_tests_failed);
-			     model.save_snapshot(&snap_name);				 
-			}
-			return;
-		}			
     }
 }
 
-/*
 fn run_heavy_battery(model_path: &str) -> bool {
-    let mut audit = HealthAudit::new();
-	
-	let mut model = match IonModel::load_snapshot(model_path) {
+    let mut model = match IonModel::load_snapshot(model_path) {
         Ok(m) => m,
         Err(e) => { println!("Failed to load {}: {}", model_path, e); return false; },
     };
 
-    model.warmup(5000);
     println!("--- Starting Battery for: {} ---", model_path);
     let alpha = 0.01;
     let mut rng = rand::thread_rng();
 
-    let bits = model.generate_block_with_audit(1_000_000, &mut audit);
-	migrate_zombies(&mut model,&audit);
-
     // 1. 10x 1M Tests
-    println!("Staring 1 million");
-	for i in 0..10 {
-        let bits = model.generate_block_with_audit(1_000_000, &mut audit);		
-        //if !RandomTests::new(&bits).all_core_pass(alpha) { return false; }
-		RandomTests::new(&bits).all_core_pass(alpha);
-		audit.report();
-        println!("1M Block #{}", i);
+    for i in 0..10 {
+        let bits = model.generate_block(1_000_000);
+        if !Nist::new(&bits).all_core_pass(alpha) { return false; }
+        println!("Pass: 1M Block #{}", i);
     }
 
     // 2. 10x 2.5M Tests
-    println!("Staring 2.5 million");
-	for i in 0..10 {
-        let bits = model.generate_block_with_audit(2_500_000, &mut audit);
-        //if !RandomTests::new(&bits).all_core_pass(alpha) { return false; }
-		RandomTests::new(&bits).all_core_pass(alpha);
-		//audit.report();
-        println!("2.5M Block #{}", i);
+    for i in 0..10 {
+        let bits = model.generate_block(2_500_000);
+        if !Nist::new(&bits).all_core_pass(alpha) { return false; }
+        println!("Pass: 2.5M Block #{}", i);
     }
 
     // 3. 5x 10M with 1000x Random Bouncing (2.5M sections)
-	println!("Staring 10 million");
     for i in 0..5 {
-        let massive_bits = model.generate_block_with_audit(10_000_000, &mut audit);
-        for _ in 0..10 {
+        let massive_bits = model.generate_block(10_000_000);
+        for _ in 0..1000 {
             let offset = rng.gen_range(0..=(10_000_000 - 2_500_000));
             let section = &massive_bits[offset..offset + 2_500_000];
-            //if !RandomTests::new(section).all_core_pass(alpha) { 
-            //    println!("FAIL: 10M Bounce at offset {}", offset);
-            //    return false; 
-            //}
-			RandomTests::new(section).all_core_pass(alpha);
-			//audit.report();
-			println!("-----bounce marker-----")
+            if !Nist::new(section).all_core_pass(alpha) { 
+                println!("FAIL: 10M Bounce at offset {}", offset);
+                return false; 
+            }
         }
-        println!("10M Bouncing Block #{}", i);
+        println!("Pass: 10M Bouncing Block #{}", i);
     }
 
     // 4. 5x 100M with 1000x Random Bouncing (10M sections)
-    println!("Staring 100 million");
-	for i in 0..5 {
-        let ultra_bits = model.generate_block_with_audit(100_000_000, &mut audit);
-        for _ in 0..10 {
-            let offset = rng.gen_range(0..=(100_000_000 - 25_000_000));
-            let section = &ultra_bits[offset..offset + 25_000_000];
-            //if !RandomTests::new(section).all_core_pass(alpha) {
-            //    println!("FAIL: 100M Bounce at offset {}", offset);
-            //    return false;
-            //}
-			RandomTests::new(section).all_core_pass(alpha);
-			println!("-----bounce marker-----");
+    for i in 0..5 {
+        let ultra_bits = model.generate_block(100_000_000);
+        for _ in 0..1000 {
+            let offset = rng.gen_range(0..=(100_000_000 - 10_000_000));
+            let section = &ultra_bits[offset..offset + 10_000_000];
+            if !Nist::new(section).all_core_pass(alpha) {
+                println!("FAIL: 100M Bounce at offset {}", offset);
+                return false;
+            }
         }
         println!("Pass: 100M Bouncing Block #{}", i);
     }
 
     true
 }
-*/
+
 fn main() {
     let files = vec![
 		"HIT_4_M0_E0_F2000_ALL0_ALL1_0011_1100.snap",
@@ -2293,12 +2042,8 @@ fn main() {
 		"HIT_4_M8_E2_F1500_ALL0_ALL1_0011_1100.snap",
 		"HIT_4_M9_E0_F1000_ALL0_ALL1_0011_1100.snap"
 	];
-    run_exhaustion_test_raw("HIT_4_M0_E4_F3500_ALL0_ALL1_0011_1100.snap");
-    //run_heavy_battery("HIT_4_M0_E4_F3500_ALL0_ALL1_0011_1100.snap");    
-    
-	//for filename in files {
-	//    println!("{} passed: {}",filename, run_heavy_battery(filename))
-    //}
-	
-	return;
+
+    for filename in files {
+	    println!("{} passed: {}",filename, run_heavy_battery(filename))
+	}
 }

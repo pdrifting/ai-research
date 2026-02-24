@@ -1582,20 +1582,13 @@ pub fn random_excursions_variant_test(&self) -> Vec<RandomExcursionsVariantResul
 }
 
   pub fn all_core_pass(&self, alpha: f64) -> (bool, usize, usize) {
-    println!("Starting tests...");
-	let f0      = self.frequency().ok().unwrap();
-    //println!("done frequency");
-	let bf0     = self.block_frequency(128).ok().unwrap();
-    //println!("done block");
-	let runs0   = self.runs().ok().unwrap();
-    //println!("done runs");
-	let lr0     = self.longest_run_of_ones().ok().unwrap();
-    //println!("done longest run of ones");
-	let rank0   = self.binary_matrix_rank().ok().unwrap();
-    //println!("done binary matrix");
-	let apen0   = self.approximate_entropy(2).ok().unwrap();
-    //println!("done approximate entropy");
-	let serial0 = self.serial(2).ok().unwrap();
+    let f0      = self.frequency().ok().unwrap();
+    let bf0     = self.block_frequency(128).ok().unwrap();
+    let runs0   = self.runs().ok().unwrap();
+    let lr0     = self.longest_run_of_ones().ok().unwrap();
+    let rank0   = self.binary_matrix_rank().ok().unwrap();
+    let apen0   = self.approximate_entropy(2).ok().unwrap();
+    let serial0 = self.serial(2).ok().unwrap();
     let cusum0  = self.cumulative_sums().ok().unwrap();
     let dft0    = self.dft_spectral_test().ok().unwrap();
     let nonov0  = self.non_overlapping_template_test(9, TEMPLATE_9).ok().unwrap();
@@ -1635,25 +1628,8 @@ pub fn random_excursions_variant_test(&self) -> Vec<RandomExcursionsVariantResul
     check!(um0.p_value, "Universal Maurer");
     check!(lc0.p_value, "Linear Complexity");
 
-    let mut rexb = false;
-	let mut rexbc = 0;
-	total_tests += 1;
-    for r in &rex  { if r.p_value < alpha { rexb = true; rexbc += 1; } }
-    
-	if rexb == true {
-		println!("FAIL: Random Excursions (states {})", rexbc);
-		failed_count += 1;
-	}
-	
-	let mut rexvb = false;
-	let mut rexvbc = 0;
-	total_tests += 1;
-	for r in &rexv { if r.p_value < alpha { rexvb = true; rexvbc += 1; } }
-
-    if rexvb == true {
-		println!("FAIL: Random Excursions variant (states {})", rexvbc);
-		failed_count += 1;
-	}
+    for r in &rex  { total_tests += 1; if r.p_value < alpha { println!("FAIL: Random Excursions (state {})", r.x); failed_count += 1; } }
+    for r in &rexv { total_tests += 1; if r.p_value < alpha { println!("FAIL: Random Excursions variant (state {})", r.x); failed_count += 1; } }
 
     let passed = failed_count == 0;
     (passed, failed_count, total_tests)
@@ -1830,74 +1806,25 @@ impl IonModel {
     // Track previous state for flip-rate auditing
     let mut prev_state: Vec<u8> = self.hidden.iter().map(|n| n.state).collect();
 
-while bits.len() < size {
-    self.tick(&input, &mut output_bits);
-    audit.record(&prev_state, &output_bits);
-    
-    // Use the state of a specific gate to "jitter" the harvest count
-    // This makes the sampling rate itself a chaotic variable
-    let jitter_factor = (output_bits[0] as usize) + (output_bits[1024] as usize); 
-    let harvest_count = 800 + (jitter_factor % 200); // Harvest between 800 and 1000
-
-    for i in 0..harvest_count {
-        if bits.len() >= size { break; }
-        bits.push(output_bits[i]);
-    }
-}
-    bits
-}
-
-pub fn generate_block_prime_stride(&mut self, size: usize, audit: &mut HealthAudit) -> Vec<u8> {
-    let mut bits = Vec::with_capacity(size);
-    
-	let mut output_bits = vec![0u8; LATTICE_WIDTH];
-    
-	let mut sIndex = 0;
-	let stride: [usize; 6] = [31,17,29,23,11,19];
-	let mut sCurrent = stride[sIndex];
-	let mut scIndex = 0;
-	let sCounter: [usize; 13] = [5,13,7,11,13,5,7,19,23,11,31,17,19];
-    let mut sCurrentCount = sCounter[scIndex];
-	
-	let mut current_idx = 0;
-    	
-    let mut prev_state: Vec<u8> = self.hidden.iter().map(|n| n.state).collect();
     while bits.len() < size {
-        self.tick(&vec![0u8; INPUT_SIZE], &mut output_bits);
+        self.tick(&input, &mut output_bits);
+        
+        // Record actual gate flips for the thermal report
         audit.record(&prev_state, &output_bits);
+        prev_state.copy_from_slice(&output_bits);
 
-        //let mut isFirst = true;
-		//let mut isSecond = true;
-        for _ in 0..125 { // Extract fewer bits per tick to ensure higher quality
+        // Instead of XORing 4 points together, we take 1000 raw gate states.
+        // We limit it to 1000 to keep a stable extraction ratio per tick.
+        for i in 0..1000 {
             if bits.len() >= size { break; }
-
-			bits.push(output_bits[current_idx]);
-			/*
-			for i in 0..125 {
-                if bits.len() >= size { break; }
-                let b = output_bits[i] ^ output_bits[i + 250] ^ output_bits[i + 500] ^ output_bits[i + 750];
-                bits.push(b);
-            }
-			*/
-			
-			sCurrentCount -= 1;
-			if sCurrentCount == 0 {
-			   scIndex += 1;
-               if scIndex >= 11 { scIndex = 0; }
-			   sCurrentCount = sCounter[scIndex];
-			   
-			   sIndex +=1;
-			   if sIndex >= 5 { sIndex = 0; }
-			   sCurrent = stride[sIndex];
-			}
-						
-            current_idx = (current_idx + sCurrent) % LATTICE_WIDTH;
-			//current_idx = (current_idx) % LATTICE_WIDTH;
+            
+            // RAW EXTRACTION: No XOR, just the state of the gate
+            let b = output_bits[i]; 
+            bits.push(b);
         }
     }
     bits
 }
-	
 	
 }
 
@@ -1920,68 +1847,22 @@ impl HealthAudit {
         self.total_ticks += 1;
     }
 
-	fn report(&self) -> u64 {
-		if self.total_ticks == 0 {
-			println!("HealthAudit: No ticks recorded yet.");
-			return LATTICE_WIDTH as u64; 
-		}
-
-		let mut thermal_profile = self.flip_counts.iter()
-			.map(|&c| (c as f64 / self.total_ticks as f64) * 100.0)
-			.collect::<Vec<f64>>();
-    
-		// Use total_cmp to avoid the NaN panic
-		thermal_profile.sort_by(|a, b| a.total_cmp(b));
-   
-		println!("--- Thermal Equilibrium Report ---");
-		// Safe indexing with guards
-		if let (Some(cold), Some(med), Some(hot)) = (
-			thermal_profile.first(),
-			thermal_profile.get(LATTICE_WIDTH / 2),
-			thermal_profile.last()
-		) {
-			println!("Coldest Gate: {:.2}% flip rate", cold);
-			println!("Median Gate:  {:.2}% flip rate", med);
-			println!("Hottest Gate: {:.2}% flip rate", hot);
-		}
-    
-		let dead_gates = thermal_profile.iter().filter(|&&r| r < 0.01).count();
-		println!("Dead Gates (Stuck): {} / {}", dead_gates, LATTICE_WIDTH);
-    
-		dead_gates as u64
-	}
-}
-
-fn migrate_zombies(model: &mut IonModel, audit: &HealthAudit) {
-    let mut rng = rand::thread_rng();
-    
-    // Identify "Hot" internal gates to tether the zombies to
-    let hot_gates: Vec<u16> = audit.flip_counts.iter()
-        .enumerate()
-        .filter(|&(_, count)| *count > 0)
-        .map(|(i, _)| i as u16)
-        .collect();
-
-    for i in 0..LATTICE_WIDTH {
-        if audit.flip_counts[i] == 0 {            
-            let r = rng.gen_range(0..=2);
-			if r == 0 {
-				model.hidden[i].gate_type = GateType::NOR;
-			} else {
-			    model.hidden[i].gate_type = GateType::XOR;
-            }
-            // 2. Connectivity Migration: 
-            // Move dendrites from Input Pins to Internal Gates
-            for d_idx in 0..MAX_SYNAPSES {
-                // If it was looking at an input pin, move it to a hot gate
-                if model.hidden[i].dendrites[d_idx].source_idx < INPUT_SIZE as u16 {
-                    if !hot_gates.is_empty() {
-                        let new_target = hot_gates[rng.gen_range(0..hot_gates.len())];
-                        model.hidden[i].dendrites[d_idx].source_idx = new_target + INPUT_SIZE as u16;
-                    }
-                }
-            }
-        }
+    fn report(&self) -> u64 {
+        let mut thermal_profile = self.flip_counts.iter()
+            .map(|&c| (c as f64 / self.total_ticks as f64) * 100.0)
+            .collect::<Vec<f64>>();
+        
+        thermal_profile.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        
+        println!("--- Thermal Equilibrium Report ---");
+        println!("Coldest Gate: {:.2}% flip rate", thermal_profile[0]);
+        println!("Median Gate:  {:.2}% flip rate", thermal_profile[LATTICE_WIDTH / 2]);
+        println!("Hottest Gate: {:.2}% flip rate", thermal_profile[LATTICE_WIDTH - 1]);
+        
+        let dead_gates = thermal_profile.iter().filter(|&&r| r < 1.0).count();
+        println!("Dead Gates (Stuck): {} / {}", dead_gates, LATTICE_WIDTH);
+		
+		return dead_gates as u64;
     }
 }
 
@@ -2017,7 +1898,40 @@ fn analyze_zombie_topology(model: &IonModel, audit: &HealthAudit) {
     }
 }
 
+fn migrate_zombies(model: &mut IonModel, audit: &HealthAudit) {
+    let mut rng = rand::thread_rng();
+    
+    // Identify "Hot" internal gates to tether the zombies to
+    let hot_gates: Vec<u16> = audit.flip_counts.iter()
+        .enumerate()
+        .filter(|&(_, count)| *count > 0)
+        .map(|(i, _)| i as u16)
+        .collect();
 
+    for i in 0..LATTICE_WIDTH {
+        if audit.flip_counts[i] == 0 {
+            // 1. Surgical Gate Change: Force to NOR			
+            let r = rng.gen_range(0..=1);
+			if r == 1 {
+				model.hidden[i].gate_type = GateType::NOR;
+			} else {
+			    model.hidden[i].gate_type = GateType::XOR;
+			}
+
+            // 2. Connectivity Migration: 
+            // Move dendrites from Input Pins to Internal Gates
+            for d_idx in 0..MAX_SYNAPSES {
+                // If it was looking at an input pin, move it to a hot gate
+                if model.hidden[i].dendrites[d_idx].source_idx < INPUT_SIZE as u16 {
+                    if !hot_gates.is_empty() {
+                        let new_target = hot_gates[rng.gen_range(0..hot_gates.len())];
+                        model.hidden[i].dendrites[d_idx].source_idx = new_target + INPUT_SIZE as u16;
+                    }
+                }
+            }
+        }
+    }
+}
 
 fn run_exhaustion_test(model_path: &str) {
     let mut model = IonModel::load_snapshot(model_path).unwrap();	
@@ -2027,39 +1941,39 @@ fn run_exhaustion_test(model_path: &str) {
     let mut pass_count = 0;
 
 /*
-10200
-400
+24600
+4512
 
-[Block 600] Pass Rate: 96.08%
+[Block 600] Pass Rate: 81.66%
 --- Thermal Equilibrium Report ---
-Coldest Gate: 49.27% flip rate
-Median Gate:  49.70% flip rate
-Hottest Gate: 50.26% flip rate
+Coldest Gate: 15.67% flip rate
+Median Gate:  43.39% flip rate
+Hottest Gate: 63.72% flip rate
 Dead Gates (Stuck): 0 / 2048
 */
 
     let run_to_block = 600;
-	let base_failed = 400;
-	let base_run    = 10200;
+	let base_failed = 4512;
+	let base_run    = 24600;
 
     println!("--- Launching Exhaustion & Health Audit: {} ---", model_path);
     model.warmup(5000);
 
-    //let bits = model.generate_block_with_audit(10_000_000, &mut audit);
-	//migrate_zombies(&mut model,&audit);
-	//let bits = model.generate_block_with_audit(10_000_000, &mut audit);
-	//let dead_count = audit.report();
-	//if dead_count > 0 {
-	//	println!("dead count in report >0 reseed.");
-    //   return;
-	//}
+    let bits = model.generate_block_with_audit(10_000_000, &mut audit);
+	migrate_zombies(&mut model,&audit);
+	let bits = model.generate_block_with_audit(10_000_000, &mut audit);
+	let dead_count = audit.report();
+	if dead_count > 0 {
+		println!("dead count in report >0 reseed.");
+        return;
+	}
 	
 	let mut total_tests_run = 0;
 	let mut total_tests_failed = 0;
 	
     loop {
         // Generate with Audit tracking
-        let bits = model.generate_block_prime_stride(2_500_000, &mut audit);
+        let bits = model.generate_block_with_audit(2_500_000, &mut audit);
 		
         // Hash Check
         let mut hasher = Sha256::new();
@@ -2097,11 +2011,11 @@ Dead Gates (Stuck): 0 / 2048
         audit.report();
 
         if block_count >= 600 {
-            if pass_rate > 96.08 {
+            if pass_rate > 81.658 {
 				 let snap_name = format!("candidate_{}.snap",total_tests_failed);
-			     model.save_snapshot(&snap_name);				 
+			     model.save_snapshot(&snap_name);
+				 return;
 			}
-			return;
 		}			
     }
 }
@@ -2114,27 +2028,27 @@ fn run_exhaustion_test_raw(model_path: &str) {
     let mut pass_count = 0;
 
 /*
-10200
-400
+24600
+4512
 
-[Block 600] Pass Rate: 96.08%
+[Block 600] Pass Rate: 81.66%
 --- Thermal Equilibrium Report ---
-Coldest Gate: 49.27% flip rate
-Median Gate:  49.70% flip rate
-Hottest Gate: 50.26% flip rate
+Coldest Gate: 15.67% flip rate
+Median Gate:  43.39% flip rate
+Hottest Gate: 63.72% flip rate
 Dead Gates (Stuck): 0 / 2048
 */
 
     let run_to_block = 600;
-	let base_failed = 400;
-	let base_run    = 10200;
+	let base_failed = 4512;
+	let base_run    = 24600;
 
-    println!("--- Launching RAW Exhaustion & Health Audit: {} ---", model_path);
+    println!("--- Launching Exhaustion & Health Audit: {} ---", model_path);
     model.warmup(5000);
 
-    let bits = model.generate_block_prime_stride(10_000_000, &mut audit);
+    let bits = model.generate_block_raw_audit(10_000_000, &mut audit);
 	migrate_zombies(&mut model,&audit);
-	let bits = model.generate_block_prime_stride(10_000_000, &mut audit);
+	let bits = model.generate_block_raw_audit(10_000_000, &mut audit);
 	let dead_count = audit.report();
 	if dead_count > 0 {
 		println!("dead count in report >0 reseed.");
@@ -2146,7 +2060,7 @@ Dead Gates (Stuck): 0 / 2048
 	
     loop {
         // Generate with Audit tracking
-        let bits = model.generate_block_prime_stride(2_500_000, &mut audit);
+        let bits = model.generate_block_raw_audit(2_500_000, &mut audit);
 		
         // Hash Check
         let mut hasher = Sha256::new();
@@ -2184,11 +2098,11 @@ Dead Gates (Stuck): 0 / 2048
         audit.report();
 
         if block_count >= 600 {
-            if pass_rate > 96.08 {
+            if pass_rate > 81.658 {
 				 let snap_name = format!("candidate_{}.snap",total_tests_failed);
-			     model.save_snapshot(&snap_name);				 
+			     model.save_snapshot(&snap_name);
+				 return;
 			}
-			return;
 		}			
     }
 }
