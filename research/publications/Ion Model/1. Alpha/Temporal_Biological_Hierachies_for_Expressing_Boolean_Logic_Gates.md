@@ -898,7 +898,7 @@ Complexity:
 
 #### Option 3: SELF-TIMING (Local clocks, handshake protocols)
 Pros:
-- Closer to biology than a global clock: Each circuit or microcircuit has its own oscillation, rhythm, or timing loop — like cortical columns, hippocampal theta, or cerebellar microzones.
+- Closer to biology than a global clock: Each circuit or microcircuit has its own oscillation, rhythm, or timing loop acting like cortical columns, hippocampal theta, or cerebellar microzones.
 - Highly modular: Circuits can run independently and only synchronize when needed.
 - Scales better than pure asynchronous systems: Because local timing reduces race conditions inside each module.
 - Allows flexible, dynamic computation: Circuits can speed up, slow down, or pause depending on context.
@@ -1132,4 +1132,5 @@ It will come when we start thinking about:
 - stewards of long‑term trajectories
 
 We are a long way from any of these. Even the most comprehensive dendritic computation reviews, such as the Annual Review of Neuroscience article by London & Häusser (2005), conclude with a ‘wish list’ of unanswered questions. These works identify the nonlinear, compartmentalized, and computationally rich properties of dendrites, but they provide no operational models, no circuit frameworks, and no mechanisms for chaining or reasoning. The roadmap they outline remains untraveled because the field lacks a computational substrate capable of expressing dendritic logic. This responsitory begins where those roadmaps end.
+
 
