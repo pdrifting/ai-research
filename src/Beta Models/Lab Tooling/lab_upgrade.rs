@@ -641,27 +641,47 @@ pub struct BitByteStream {
     pub bytes: Vec<u8>,
     pub byte_len: usize,
 
-    pub bit_histogram: [usize; 2],	
+    pub bit_histogram: [usize; 2],
     pub byte_histogram: [usize; 256],
-	
-	pub byte_expected: f64,
-	
-	pub cusum_s: i64,
-	pub cusum_sup: i64,
-	pub cusum_inf: i64,
+
+    pub byte_expected: f64,
+
+    pub cusum_s: i64,
+    pub cusum_sup: i64,
+    pub cusum_inf: i64,
+
+    // ============================
+    // 3‑D point stream (byte triplets)
+    // ============================
+    pub points_3d: Vec<(u8, u8, u8)>,
+    pub points_len: usize,
+
+    // ============================
+    // 3‑D grids for star discrepancy
+    // ============================
+    pub grid6: [[[u32; 6]; 6]; 6],
+    pub grid16: [[[u32; 16]; 16]; 16],
+
+    // Prefix sums for fast box queries
+    pub prefix6: [[[u32; 6]; 6]; 6],
+    pub prefix16: [[[u32; 16]; 16]; 16],
 }
 
 impl BitByteStream {
     pub fn new_from_bits(bits: Vec<u8>) -> Self {
         let bit_len = bits.len();
 
-        // Bit histogram (0/1 counts)
+        // -----------------------------
+        // Bit histogram
+        // -----------------------------
         let mut bit_hist = [0usize; 2];
         for &b in &bits {
             bit_hist[b as usize] += 1;
         }
 
-        // Convert bits → bytes (8 bits per byte)
+        // -----------------------------
+        // Convert bits → bytes
+        // -----------------------------
         let mut bytes = Vec::with_capacity(bit_len / 8);
         for chunk in bits.chunks(8) {
             let mut byte = 0u8;
@@ -671,33 +691,114 @@ impl BitByteStream {
             bytes.push(byte);
         }
 
+        // -----------------------------
         // Byte histogram
+        // -----------------------------
         let mut byte_hist = [0usize; 256];
         for &b in &bytes {
             byte_hist[b as usize] += 1;
         }
 
-        let expected = bytes.len() as f64 / 256.0;
+        let byte_len = bytes.len();
+        let expected = byte_len as f64 / 256.0;
 
+        // -----------------------------
+        // CUSUM precomputation
+        // -----------------------------
         let mut s: i64 = 0;
-		let mut sup: i64 = 0;
-		let mut inf: i64 = 0;
-		for &bit in bits {
-     		if bit == 1 { s += 1; } else { s -= 1; }
-			if s > sup { sup = s; } if s < inf { inf = s; }
-		}
+        let mut sup: i64 = 0;
+        let mut inf: i64 = 0;
+
+        for &bit in &bits {
+            if bit == 1 { s += 1; } else { s -= 1; }
+            if s > sup { sup = s; }
+            if s < inf { inf = s; }
+        }
+
+        // -----------------------------
+        // Build 3‑D points (byte triplets)
+        // -----------------------------
+        let mut points_3d = Vec::with_capacity(byte_len / 3);
+        for i in (0..byte_len.saturating_sub(2)).step_by(3) {
+            points_3d.push((bytes[i], bytes[i + 1], bytes[i + 2]));
+        }
+        let points_len = points_3d.len();
+
+        // -----------------------------
+        // Build 3‑D grids for G=6 and G=16
+        // -----------------------------
+        let mut grid6 = [[[0u32; 6]; 6]; 6];
+        let mut grid16 = [[[0u32; 16]; 16]; 16];
+
+        for &(x, y, z) in &points_3d {
+            let ix6 = (x as usize * 6) / 256;
+            let iy6 = (y as usize * 6) / 256;
+            let iz6 = (z as usize * 6) / 256;
+            grid6[ix6][iy6][iz6] += 1;
+
+            let ix16 = (x as usize * 16) / 256;
+            let iy16 = (y as usize * 16) / 256;
+            let iz16 = (z as usize * 16) / 256;
+            grid16[ix16][iy16][iz16] += 1;
+        }
+
+        // -----------------------------
+        // Build prefix sums for G=6
+        // -----------------------------
+        let mut prefix6 = [[[0u32; 6]; 6]; 6];
+        for i in 0..6 {
+            for j in 0..6 {
+                for k in 0..6 {
+                    let mut sum = grid6[i][j][k];
+                    if i > 0 { sum += prefix6[i - 1][j][k]; }
+                    if j > 0 { sum += prefix6[i][j - 1][k]; }
+                    if k > 0 { sum += prefix6[i][j][k - 1]; }
+                    if i > 0 && j > 0 { sum -= prefix6[i - 1][j - 1][k]; }
+                    if i > 0 && k > 0 { sum -= prefix6[i - 1][j][k - 1]; }
+                    if j > 0 && k > 0 { sum -= prefix6[i][j - 1][k - 1]; }
+                    if i > 0 && j > 0 && k > 0 { sum += prefix6[i - 1][j - 1][k - 1]; }
+                    prefix6[i][j][k] = sum;
+                }
+            }
+        }
+
+        // -----------------------------
+        // Build prefix sums for G=16
+        // -----------------------------
+        let mut prefix16 = [[[0u32; 16]; 16]; 16];
+        for i in 0..16 {
+            for j in 0..16 {
+                for k in 0..16 {
+                    let mut sum = grid16[i][j][k];
+                    if i > 0 { sum += prefix16[i - 1][j][k]; }
+                    if j > 0 { sum += prefix16[i][j - 1][k]; }
+                    if k > 0 { sum += prefix16[i][j][k - 1]; }
+                    if i > 0 && j > 0 { sum -= prefix16[i - 1][j - 1][k]; }
+                    if i > 0 && k > 0 { sum -= prefix16[i - 1][j][k - 1]; }
+                    if j > 0 && k > 0 { sum -= prefix16[i][j - 1][k - 1]; }
+                    if i > 0 && j > 0 && k > 0 { sum += prefix16[i - 1][j - 1][k - 1]; }
+                    prefix16[i][j][k] = sum;
+                }
+            }
+        }
 
         Self {
             bits,
-			bit_len,                       
+            bit_len,
             bytes,
-            byte_len: bytes.len(),           
-            bit_histogram: bit_hist,   
+            byte_len,
+            bit_histogram: bit_hist,
             byte_histogram: byte_hist,
-			byte_expected: expected,
-			cusum_s: s,
-			cusum_sup: sup,
-			cusum_inf: inf,
+            byte_expected: expected,
+            cusum_s: s,
+            cusum_sup: sup,
+            cusum_inf: inf,
+            points_3d,
+            points_len,
+            grid6,
+            grid16,
+            prefix6,
+            prefix16,
         }
     }
 }
@@ -1487,9 +1588,6 @@ pub fn ncd_test(stream: &BitByteStream) -> f64 {
     sanitize_p(2.0 * (1.0 - normal_cdf(stat.abs())))
 }
 
-
-
-
 // ================================================================
 //  Empirical byte entropy H = -Σ p(x) log2 p(x)
 // ================================================================
@@ -1627,6 +1725,115 @@ pub fn entropy_rate_stability_deep_dive_test(stream: &BitByteStream) -> f64 {
     sanitize_p(2.0 * (1.0 - normal_cdf(stat.abs())))
 }
 
+// ================================================================
+//  Star Discrepancy Test (3D embedding)
+//  Measures high-dimensional uniformity
+//  Returns: p-value (f64)
+// ================================================================
+
+pub fn star_discrepancy_test(stream: &BitByteStream) -> f64 {
+    let n = stream.byte_len;    
+    let bytes = &stream.bytes;
+    
+	let mut points = Vec::with_capacity(n / 3);
+    for i in (0..n.saturating_sub(2)).step_by(3) {
+        points.push((
+            bytes[i] as f64 / 255.0,
+            bytes[i + 1] as f64 / 255.0,
+            bytes[i + 2] as f64 / 255.0,
+        ));
+    }
+
+    let m = points.len() as f64;
+    const G: usize = 6;
+    let mut max_diff = 0.0;
+
+    for i in 1..=G {
+        let u = i as f64 / G as f64;
+        for j in 1..=G {
+            let v = j as f64 / G as f64;
+            for k in 1..=G {
+                let w = k as f64 / G as f64;
+                let mut count = 0usize;
+                for &(px, py, pz) in &points {
+                    if px <= u && py <= v && pz <= w { count += 1; }
+                }
+                let diff = ((count as f64 / m) - (u * v * w)).abs();
+                if diff > max_diff { max_diff = diff; }
+            }
+        }
+    }
+
+    let stat = max_diff * m.sqrt();
+    let p = 1.0 - normal_cdf(stat);
+    if p.is_nan() { 0.0 } else { p.clamp(0.0, 1.0) }
+}
+
+pub fn star_discrepancy_deep_dive_test(stream: &BitByteStream) -> f64 {
+    let n = stream.byte_len;
+    let bytes = &stream.bytes;
+
+    let mut points = Vec::with_capacity(n / 3);
+    for i in (0..n.saturating_sub(2)).step_by(3) {
+        points.push((
+            bytes[i] as f64 / 255.0,
+            bytes[i + 1] as f64 / 255.0,
+            bytes[i + 2] as f64 / 255.0,
+        ));
+    }
+
+    let m = points.len() as f64;
+    // G=16 creates 4,096 test boxes for high-resolution analysis
+    const G: usize = 16;
+    let mut max_diff = 0.0;
+
+    for i in 1..=G {
+        let u = i as f64 / G as f64;
+        for j in 1..=G {
+            let v = j as f64 / G as f64;
+            for k in 1..=G {
+                let w = k as f64 / G as f64;
+                let mut count = 0usize;
+                for &(px, py, pz) in &points {
+                    if px <= u && py <= v && pz <= w { count += 1; }
+                }
+                let diff = ((count as f64 / m) - (u * v * w)).abs();
+                if diff > max_diff { max_diff = diff; }
+            }
+        }
+    }
+
+    // At 10M bits, we use a more rigorous K-S mapping for the max difference
+    let stat = max_diff * m.sqrt();
+    let p = 1.0 - normal_cdf(stat);
+    if p.is_nan() { 0.0 } else { p.clamp(0.0, 1.0) }
+}
+
+// ----------------------------------------------------------------
+// Star Discrepency Audit Wrappers (Thread-Aware)
+// ----------------------------------------------------------------
+
+pub fn star_discrepancy_history(thread_id: usize, stream: &BitByteStream) -> f64 {
+    meta_test_wrapper(thread_id, "star_discrepancy", stream, star_discrepancy_test)
+}
+
+pub fn star_discrepancy_now_and_audit(thread_id: usize, stream: &BitByteStream) -> (f64, GlobalAuditResult) {
+    let p_now = star_discrepancy_test(stream);
+    meta_history_push(thread_id, "star_discrepancy", p_now);
+    (p_now, global_uniformity_audit("star_discrepancy"))
+}
+
+pub fn star_discrepancy_deep_dive_history(thread_id: usize, stream: &BitByteStream) -> f64 {
+    meta_test_wrapper(thread_id, "star_discrepancy_deep_dive", stream, star_discrepancy_deep_dive_test)
+}
+
+pub fn star_discrepancy_deep_dive_now_and_audit(thread_id: usize, stream: &BitByteStream) -> (f64, GlobalAuditResult) {
+    let p_now = star_discrepancy_deep_dive_test(stream);
+    meta_history_push(thread_id, "star_discrepancy_deep_dive", p_now);
+    (p_now, global_uniformity_audit("star_discrepancy_deep_dive"))
+}
+
+
 pub fn run_tests(thread_id: usize, stream: &BitByteStream) {
     let bucket = get_sampling_frequency_bucket(&stream.bit_len);
 		
@@ -1689,118 +1896,6 @@ pub fn run_tests(thread_id: usize, stream: &BitByteStream) {
 	
 	
 	// ... carry on through the tests 
-}
-
-
-
-// ================================================================
-//  Star Discrepancy Test (3D embedding)
-//  Measures high-dimensional uniformity
-//  Returns: p-value (f64)
-// ================================================================
-
-pub fn star_discrepancy_test(stream: &BitByteStream) -> f64 {
-    let n = stream.byte_len;
-    if n < 300 { return 0.0; }
-
-    let bytes = &stream.bytes;
-    let mut points = Vec::with_capacity(n / 3);
-    for i in (0..n.saturating_sub(2)).step_by(3) {
-        points.push((
-            bytes[i] as f64 / 255.0,
-            bytes[i + 1] as f64 / 255.0,
-            bytes[i + 2] as f64 / 255.0,
-        ));
-    }
-
-    let m = points.len() as f64;
-    const G: usize = 6;
-    let mut max_diff = 0.0;
-
-    for i in 1..=G {
-        let u = i as f64 / G as f64;
-        for j in 1..=G {
-            let v = j as f64 / G as f64;
-            for k in 1..=G {
-                let w = k as f64 / G as f64;
-                let mut count = 0usize;
-                for &(px, py, pz) in &points {
-                    if px <= u && py <= v && pz <= w { count += 1; }
-                }
-                let diff = ((count as f64 / m) - (u * v * w)).abs();
-                if diff > max_diff { max_diff = diff; }
-            }
-        }
-    }
-
-    let stat = max_diff * m.sqrt();
-    let p = 1.0 - normal_cdf(stat);
-    if p.is_nan() { 0.0 } else { p.clamp(0.0, 1.0) }
-}
-
-pub fn star_discrepancy_deep_dive_test(stream: &BitByteStream) -> f64 {
-    let n = stream.byte_len;
-    if n < 60000 { return 0.0; } // Ensure density for G=16
-
-    let bytes = &stream.bytes;
-    let mut points = Vec::with_capacity(n / 3);
-    for i in (0..n.saturating_sub(2)).step_by(3) {
-        points.push((
-            bytes[i] as f64 / 255.0,
-            bytes[i + 1] as f64 / 255.0,
-            bytes[i + 2] as f64 / 255.0,
-        ));
-    }
-
-    let m = points.len() as f64;
-    // G=16 creates 4,096 test boxes for high-resolution analysis
-    const G: usize = 16;
-    let mut max_diff = 0.0;
-
-    for i in 1..=G {
-        let u = i as f64 / G as f64;
-        for j in 1..=G {
-            let v = j as f64 / G as f64;
-            for k in 1..=G {
-                let w = k as f64 / G as f64;
-                let mut count = 0usize;
-                for &(px, py, pz) in &points {
-                    if px <= u && py <= v && pz <= w { count += 1; }
-                }
-                let diff = ((count as f64 / m) - (u * v * w)).abs();
-                if diff > max_diff { max_diff = diff; }
-            }
-        }
-    }
-
-    // At 10M bits, we use a more rigorous K-S mapping for the max difference
-    let stat = max_diff * m.sqrt();
-    let p = 1.0 - normal_cdf(stat);
-    if p.is_nan() { 0.0 } else { p.clamp(0.0, 1.0) }
-}
-
-// ----------------------------------------------------------------
-// Star Discrepency Audit Wrappers (Thread-Aware)
-// ----------------------------------------------------------------
-
-pub fn star_discrepancy_history(thread_id: usize, stream: &BitByteStream) -> f64 {
-    meta_test_wrapper(thread_id, "star_discrepancy", stream, star_discrepancy_test)
-}
-
-pub fn star_discrepancy_now_and_audit(thread_id: usize, stream: &BitByteStream) -> (f64, GlobalAuditResult) {
-    let p_now = star_discrepancy_test(stream);
-    meta_history_push(thread_id, "star_discrepancy", p_now);
-    (p_now, global_uniformity_audit("star_discrepancy"))
-}
-
-pub fn star_discrepancy_deep_dive_history(thread_id: usize, stream: &BitByteStream) -> f64 {
-    meta_test_wrapper(thread_id, "star_discrepancy_deep_dive", stream, star_discrepancy_deep_dive_test)
-}
-
-pub fn star_discrepancy_deep_dive_now_and_audit(thread_id: usize, stream: &BitByteStream) -> (f64, GlobalAuditResult) {
-    let p_now = star_discrepancy_deep_dive_test(stream);
-    meta_history_push(thread_id, "star_discrepancy_deep_dive", p_now);
-    (p_now, global_uniformity_audit("star_discrepancy_deep_dive"))
 }
 
 // ================================================================
