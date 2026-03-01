@@ -4,7 +4,7 @@
 
 The pre‑alpha engine demonstrated that a single sigmoid neuron, when heavily biased and brute‑forced, can represent the full family of Boolean logic gates in a stable and interpretable way. In particular, XOR and XNOR require multiple neurons with symmetries and discontinuities that are fundamentally misaligned with smooth, shared‑weight optimization.
 
-The alpha engine takes a different approach.  In instead of forcing all logic into a single weight space, it expresses Boolean gates as small biological microcircuits.  This was an attempt to see if simulated temporal biological mechanisms could be implemented as a single neuron with multiple dendrites and synapses, driven by ion flux, membrane potentials, and a discrete state machine. Logic is no longer a property of a learned weight vector, but of the physical configuration of synapses and dendrites.
+The alpha engine takes a different approach.  Instead of forcing all logic into a single weight space, it expresses Boolean gates as small biological microcircuits.  This was an attempt to see if simulated temporal biological mechanisms could be implemented as a single neuron with multiple dendrites and synapses, driven by ion flux, membrane potentials, and a discrete state machine. Logic is no longer a property of a learned weight vector, but of the physical configuration of synapses and dendrites.
 
 ## 2. Biological abstraction and design goals
 
@@ -898,7 +898,7 @@ Complexity:
 
 #### Option 3: SELF-TIMING (Local clocks, handshake protocols)
 Pros:
-- Closer to biology than a global clock: Each circuit or microcircuit has its own oscillation, rhythm, or timing loop — like cortical columns, hippocampal theta, or cerebellar microzones.
+- Closer to biology than a global clock: Each circuit or microcircuit has its own oscillation, rhythm, or timing loop acting like cortical columns, hippocampal theta, or cerebellar microzones.
 - Highly modular: Circuits can run independently and only synchronize when needed.
 - Scales better than pure asynchronous systems: Because local timing reduces race conditions inside each module.
 - Allows flexible, dynamic computation: Circuits can speed up, slow down, or pause depending on context.
@@ -1132,3 +1132,5 @@ It will come when we start thinking about:
 - stewards of long‑term trajectories
 
 We are a long way from any of these. Even the most comprehensive dendritic computation reviews, such as the Annual Review of Neuroscience article by London & Häusser (2005), conclude with a ‘wish list’ of unanswered questions. These works identify the nonlinear, compartmentalized, and computationally rich properties of dendrites, but they provide no operational models, no circuit frameworks, and no mechanisms for chaining or reasoning. The roadmap they outline remains untraveled because the field lacks a computational substrate capable of expressing dendritic logic. This responsitory begins where those roadmaps end.
+
+
