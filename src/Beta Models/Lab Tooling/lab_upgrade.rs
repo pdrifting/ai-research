@@ -1183,66 +1183,6 @@ pub fn cusum_reverse_test(stream: &BitByteStream) -> f64 {
     cusum_core(zrev, n)
 }
 
-// ----------------------------------------------------------------
-// Cumulative Sums Wrappers (Thread-Aware)
-// ----------------------------------------------------------------
-
-pub fn cusum_forward_history(thread_id: usize, stream: &BitByteStream) -> f64 {
-    meta_test_wrapper(thread_id, "cusum_forward", stream, cusum_forward_test)
-}
-
-pub fn cusum_forward_now_and_audit(thread_id: usize, stream: &BitByteStream) -> (f64, GlobalAuditResult) {
-    let p_now = cusum_forward_test(stream);
-    meta_history_push(thread_id, "cusum_forward", p_now);
-    (p_now, global_uniformity_audit("cusum_forward"))
-}
-
-pub fn cusum_reverse_history(thread_id: usize, stream: &BitByteStream) -> f64 {
-    meta_test_wrapper(thread_id, "cusum_reverse", stream, cusum_reverse_test)
-}
-
-pub fn cusum_reverse_now_and_audit(thread_id: usize, stream: &BitByteStream) -> (f64, GlobalAuditResult) {
-    let p_now = cusum_reverse_test(stream);
-    meta_history_push(thread_id, "cusum_reverse", p_now);
-    (p_now, global_uniformity_audit("cusum_reverse"))
-}
-
-pub fn run_tests(thread_id: usize, stream: &BitByteStream) {
-    let bucket = get_sampling_frequency_bucket(&stream.bit_len);
-		
-	// byte frequency test
-	let bfp = meta_test_wrapper(thread_id, "byte_frequency", stream, byte_frequency_test);
-    let bfg: GlobalAuditResult = global_uniformity_audit(thread_id, "byte_frequency", bucket);
-
-    // gini randomness test
-	let grp = meta_test_wrapper(thread_id, "gini_randomness", stream, gini_randomness_test);
-	let grg: GlobalAuditResult = global_uniformity_audit(thread_id, "gini_randomness", bucket);
-
-    // gap test
-	let gtp = meta_test_wrapper(thread_id, "gap_test", stream, gap_test);
-	let gtg: GlobalAuditResult = global_uniformity_audit(thread_id, "gap_test", bucket);
-
-    // turning point test
-	let tpp = meta_test_wrapper(thread_id, "turning_point", stream, turning_point_test);
-	let tpg: GlobalAuditResult = global_uniformity_audit(thread_id, "turning_point", bucket);
-
-    // lz76 complexity test
-	let lzp = meta_test_wrapper(thread_id, "lz76_complexity", stream, lz76_complexity_test)
-	let lzg: GlobalAuditResult = global_uniformity_audit(thread_id, "lz76_complexity", bucket);
-
-    // maurer universal - BYTE test
-	let mbp = meta_test_wrapper(thread_id, "maurer_universal_byte", stream, maurer_universal_byte_test)
-    let mbg: GlobalAuditResult = global_uniformity_audit(thread_id, "maurer_universal_byte", bucket);
-
-    // spectral CSD Test
-	let scp = meta_test_wrapper(thread_id, "spectral_csd", stream, spectral_csd_test)
-	let scg: GlobalAuditResult = global_uniformity_audit(thread_id, "spectral_csd", bucket);
-
-    // ... carry on through the tests 
-}
-
-
-
 // ================================================================
 //  KL Divergence Rate Tests (Byte-based)
 //  Measures distributional distance from uniform
@@ -1255,8 +1195,7 @@ pub fn run_tests(thread_id: usize, stream: &BitByteStream) {
 
 pub fn kl_divergence_test(stream: &BitByteStream) -> f64 {
     let n = stream.byte_len;
-    if n == 0 { return 0.0; }
-
+   
     let mut counts = [0usize; 256];
     for &b in &stream.bytes {
         counts[b as usize] += 1;
@@ -1265,7 +1204,6 @@ pub fn kl_divergence_test(stream: &BitByteStream) -> f64 {
     let n_f = n as f64;
     let uniform_p = 1.0 / 256.0;
 
-    // Compute KL Divergence in bits
     let mut kl = 0.0;
     for &c in counts.iter() {
         if c > 0 {
@@ -1273,85 +1211,38 @@ pub fn kl_divergence_test(stream: &BitByteStream) -> f64 {
             kl += p * (p / uniform_p).log2();
         }
     }
-
-    // Likelihood Ratio Test: 2 * n * D_kl(ln) follows Chi-Square(255)
-    // Convert KL from bits (log2) to nats (ln) by multiplying by ln(2)
-    let ln_2 = 2.0f64.ln();
-    let chi_sq_stat = 2.0 * n_f * kl * ln_2;
-
-    // Degrees of freedom for 256 byte values is 255
-    let p = 1.0 - chi_square_cdf(chi_sq_stat, 255.0);
-
-    if p.is_nan() { 0.0 } else { p.clamp(0.0, 1.0) }
+            
+    sanitize_p(chi_square_cdf((2.0 * n_f * kl * 2.0f64.ln()), 255.0))
 }
 
 pub fn kl_divergence_deep_dive_test(stream: &BitByteStream) -> f64 {
     let n = stream.byte_len;
-    // 10M bits / 1.25M bytes is the target for this deep-dive
-    if n < 65536 { 
-        return 0.5; // Not enough entropy to populate the transition matrix
+    if n < 2 {
+        return 0.0;
     }
 
-    // Allocate 2D transition matrix: 256x256
+    // 256×256 transition matrix
     let mut transitions = vec![0usize; 65536];
-    
-    // Fill the transition matrix
+
     for i in 0..n - 1 {
         let curr = stream.bytes[i] as usize;
         let next = stream.bytes[i + 1] as usize;
         transitions[(curr << 8) | next] += 1;
     }
 
-    let n_trans_f = (n - 1) as f64;
+    let n_f = (n - 1) as f64;
     let uniform_p = 1.0 / 65536.0;
-    let ln_2 = 2.0f64.ln();
 
-    // D_kl (nats) = sum( P(i,j) * ln( P(i,j) / Q(i,j) ) )
+    // KL divergence in nats
     let mut kl_nats = 0.0;
     for &count in transitions.iter() {
         if count > 0 {
-            let p = count as f64 / n_trans_f;
+            let p = count as f64 / n_f;
             kl_nats += p * (p / uniform_p).ln();
         }
     }
 
-    // G-Test (Log-likelihood ratio): 2 * N * D_kl follows Chi-Square
-    // Degrees of Freedom = (256 * 256) - 1 = 65535
-    let chi_sq_stat = 2.0 * n_trans_f * kl_nats;
-    let df = 65535.0;
-
-    // Convert to p-value
-    let p = 1.0 - chi_square_cdf(chi_sq_stat, df);
-
-    if p.is_nan() { 0.0 } else { p.clamp(0.0, 1.0) }
-}
-
-// ----------------------------------------------------------------
-// KL Divergence Audit Wrappers (Thread-Aware)
-// ----------------------------------------------------------------
-
-pub fn kl_divergence_history(thread_id: usize, stream: &BitByteStream) -> f64 {
-    meta_test_wrapper(thread_id, "kl_divergence", stream, kl_divergence_test)
-}
-
-pub fn kl_divergence_now_and_audit(thread_id: usize, stream: &BitByteStream) -> (f64, GlobalAuditResult) {
-    let p_now = kl_divergence_test(stream);
-    meta_history_push(thread_id, "kl_divergence", p_now);
-    (p_now, global_uniformity_audit("kl_divergence"))
-}
-
-// ----------------------------------------------------------------
-// KL Divergence Deep Dive Audit Wrappers (Thread-Aware)
-// ----------------------------------------------------------------
-
-pub fn kl_divergence_deep_dive_history(thread_id: usize, stream: &BitByteStream) -> f64 {
-    meta_test_wrapper(thread_id, "kl_divergence_deep_dive", stream, kl_divergence_deep_dive_test)
-}
-
-pub fn kl_divergence_deep_dive_now_and_audit(thread_id: usize, stream: &BitByteStream) -> (f64, GlobalAuditResult) {
-    let p_now = kl_divergence_deep_dive_test(stream);
-    meta_history_push(thread_id, "kl_divergence_deep_dive", p_now);
-    (p_now, global_uniformity_audit("kl_divergence_deep_dive"))
+    sanitize_p(1.0 - chi_square_cdf(2.0 * n_f * kl_nats, 65535.0))
 }
 
 // ================================================================
@@ -1359,7 +1250,81 @@ pub fn kl_divergence_deep_dive_now_and_audit(thread_id: usize, stream: &BitByteS
 //  Returns: number of phrases (complexity measure)
 // ================================================================
 
-fn lz76_complexity_bytes(data: &[u8]) -> f64 {
+// ===============================
+// Suffix Automaton for bytes
+// ===============================
+
+#[derive(Clone)]
+struct SamState {
+    len: usize,
+    link: isize,
+    next: [isize; 256],
+}
+
+impl SamState {
+    fn new(len: usize) -> Self {
+        SamState {
+            len,
+            link: -1,
+            next: [-1; 256],
+        }
+    }
+}
+
+struct SuffixAutomaton {
+    states: Vec<SamState>,
+    last: usize,
+}
+
+impl SuffixAutomaton {
+    fn new(capacity: usize) -> Self {
+        let mut states = Vec::with_capacity(2 * capacity);
+        states.push(SamState::new(0)); // state 0: initial
+        SuffixAutomaton { states, last: 0 }
+    }
+
+    fn extend(&mut self, c: u8) {
+        let c_idx = c as usize;
+        let cur = self.states.len();
+        self.states.push(SamState::new(self.states[self.last].len + 1));
+
+        let mut p = self.last as isize;
+        while p != -1 && self.states[p as usize].next[c_idx] == -1 {
+            self.states[p as usize].next[c_idx] = cur as isize;
+            p = self.states[p as usize].link;
+        }
+
+        if p == -1 {
+            self.states[cur].link = 0;
+        } else {
+            let q = self.states[p as usize].next[c_idx] as usize;
+            if self.states[p as usize].len + 1 == self.states[q].len {
+                self.states[cur].link = q as isize;
+            } else {
+                let clone = self.states.len();
+                let mut cloned = self.states[q].clone();
+                cloned.len = self.states[p as usize].len + 1;
+                self.states.push(cloned);
+
+                while p != -1 && self.states[p as usize].next[c_idx] == q as isize {
+                    self.states[p as usize].next[c_idx] = clone as isize;
+                    p = self.states[p as usize].link;
+                }
+
+                self.states[q].link = clone as isize;
+                self.states[cur].link = clone as isize;
+            }
+        }
+
+        self.last = cur;
+    }
+}
+
+// ===============================
+// LZ76 complexity via SAM
+// ===============================
+
+fn lz76_complexity_bytes_sam(data: &[u8]) -> f64 {
     let n = data.len();
     if n == 0 {
         return 0.0;
@@ -1369,37 +1334,43 @@ fn lz76_complexity_bytes(data: &[u8]) -> f64 {
     let mut i = 0usize;
 
     while i < n {
-        let mut length = 1usize;
-        let mut found = true;
+        let mut sam = SuffixAutomaton::new(n - i);
+        let mut best_len = 0usize;
+        let mut cur_len = 0usize;
+        let mut cur_state = 0usize;
 
-        while found && i + length <= n {
-            found = false;
+        for j in i..n {
+            let c = data[j];
+            let c_idx = c as usize;
 
-            'search: for j in 0..i {
-                if j + length > i {
-                    break 'search;
+            if sam.states[cur_state].next[c_idx] != -1 {
+                cur_state = sam.states[cur_state].next[c_idx] as usize;
+                cur_len += 1;
+                if cur_len > best_len {
+                    best_len = cur_len;
                 }
-                if &data[j..j + length] == &data[i..i + length] {
-                    found = true;
-                    break 'search;
+            } else {
+                sam.extend(c);
+                cur_state = sam.last;
+                cur_len = 1;
+                if cur_len > best_len {
+                    best_len = cur_len;
                 }
-            }
-
-            if found {
-                length += 1;
             }
         }
 
+        let factor_len = if best_len == 0 { 1 } else { best_len };
         factors += 1;
-        i += length;
+        i += factor_len;
     }
 
     factors as f64
 }
 
-// ================================================================
-//  Segment BitByteStream into K equal byte segments
-// ================================================================
+// ===============================
+// Segment helper (unchanged)
+// ===============================
+
 fn segment_stream_bytes<'a>(stream: &'a BitByteStream, k: usize) -> Vec<&'a [u8]> {
     let n = stream.byte_len;
     if k == 0 || n < k {
@@ -1421,26 +1392,23 @@ fn segment_stream_bytes<'a>(stream: &'a BitByteStream, k: usize) -> Vec<&'a [u8]
     segments
 }
 
-// ================================================================
-//  Segment-Aware LZ76 Similarity Test
-//  Returns: p-value (f64)
-// ================================================================
+// ========================================
+// LZ76 segment similarity test (SAM-based)
+// ========================================
 
 pub fn lz76_segment_similarity_test(stream: &BitByteStream) -> f64 {
-    let k = 8; // 8 segments provides a good balance for 1.25M byte deep dives
+    let k = 8;
     let segments = segment_stream_bytes(stream, k);
     let m = segments.len();
     if m < 2 {
         return 1.0;
     }
 
-    // Compute LZ76 complexity for each segment
     let mut comp = Vec::with_capacity(m);
     for seg in &segments {
-        comp.push(lz76_complexity_bytes(seg));
+        comp.push(lz76_complexity_bytes_sam(seg));
     }
 
-    // Compute pairwise absolute differences
     let mut diffs = Vec::new();
     for i in 0..m {
         for j in (i + 1)..m {
@@ -1456,31 +1424,13 @@ pub fn lz76_segment_similarity_test(stream: &BitByteStream) -> f64 {
     let mean_diff: f64 = diffs.iter().sum::<f64>() / n_diffs;
     let var_diff: f64 = diffs.iter().map(|d| (d - mean_diff).powi(2)).sum::<f64>() / n_diffs;
 
-    // A high 'stat' indicates segments have inconsistent complexity
     let stat = if var_diff > 0.0 {
         mean_diff / var_diff.sqrt()
     } else {
         0.0
     };
 
-    // Convert to p-value (two-tailed normal)
-    let p = 2.0 * (1.0 - normal_cdf(stat.abs()));
-
-    if p.is_nan() { 0.0 } else { p.clamp(0.0, 1.0) }
-}
-
-// ----------------------------------------------------------------
-// LZ76 Segment Similarity Audit Wrappers (Thread-Aware)
-// ----------------------------------------------------------------
-
-pub fn lz76_segment_similarity_history(thread_id: usize, stream: &BitByteStream) -> f64 {
-    meta_test_wrapper(thread_id, "lz76_segment_similarity", stream, lz76_segment_similarity_test)
-}
-
-pub fn lz76_segment_similarity_now_and_audit(thread_id: usize, stream: &BitByteStream) -> (f64, GlobalAuditResult) {
-    let p_now = lz76_segment_similarity_test(stream);       
-    meta_history_push(thread_id, "lz76_segment_similarity", p_now);
-    (p_now, global_uniformity_audit("lz76_segment_similarity"))
+    sanitize_p(2.0 * (1.0 - normal_cdf(stat.abs())));    
 }
 
 // ================================================================
@@ -1491,11 +1441,10 @@ pub fn lz76_segment_similarity_now_and_audit(thread_id: usize, stream: &BitByteS
 
 pub fn ncd_test(stream: &BitByteStream) -> f64 {
     let n = stream.byte_len;
-    if n < 1024 {
-        return 0.0; 
+    if n == 0 {
+        return 0.0;
     }
 
-    // Standard 8-segment split for local mutual information analysis
     let k = 8;
     let segments = segment_stream_bytes(stream, k);
     if segments.len() < 2 {
@@ -1508,58 +1457,38 @@ pub fn ncd_test(stream: &BitByteStream) -> f64 {
         let a = segments[i];
         let b = segments[i + 1];
 
-        let c_a = lz76_complexity_bytes(a);
-        let c_b = lz76_complexity_bytes(b);
+        let c_a = lz76_complexity_bytes_sam(a);
+        let c_b = lz76_complexity_bytes_sam(b);
 
         if c_a <= 0.0 || c_b <= 0.0 {
             continue;
         }
 
-        // Concatenate A and B to measure shared algorithmic information
         let mut ab = Vec::with_capacity(a.len() + b.len());
         ab.extend_from_slice(a);
         ab.extend_from_slice(b);
 
-        let c_ab = lz76_complexity_bytes(&ab);
-
+        let c_ab = lz76_complexity_bytes_sam(&ab);
         let c_min = c_a.min(c_b);
         let c_max = c_a.max(c_b);
 
-        // NCD = (C(A+B) - min(C(A),C(B))) / max(C(A),C(B))
         let ncd = (c_ab - c_min) / c_max;
         ncd_values.push(ncd);
     }
 
     let m = ncd_values.len();
-    if m == 0 { return 0.0; }
+    if m == 0 {
+        return 0.0;
+    }
 
-    // Average NCD across the transitions
     let mean_ncd = ncd_values.iter().sum::<f64>() / (m as f64);
-    
-    // In random data, NCD should approach 1.0. 
-    // Deviation below 1.0 indicates segments share patterns (not independent).
-    let deviation = (mean_ncd - 1.0).abs();
+    let stat = (mean_ncd - 1.0) * (m as f64).sqrt();
 
-    // Standard Normal approximation for the mean deviation
-    let stat = deviation * (m as f64).sqrt();
-    let p = 2.0 * (1.0 - normal_cdf(stat));
-
-    if p.is_nan() { 0.0 } else { p.clamp(0.0, 1.0) }
+    sanitize_p(2.0 * (1.0 - normal_cdf(stat.abs())))
 }
 
-// ----------------------------------------------------------------
-// NCD Audit Wrappers (Thread-Aware)
-// ----------------------------------------------------------------
 
-pub fn ncd_history(thread_id: usize, stream: &BitByteStream) -> f64 {
-    meta_test_wrapper(thread_id, "ncd_test", stream, ncd_test)
-}
 
-pub fn ncd_now_and_audit(thread_id: usize, stream: &BitByteStream) -> (f64, GlobalAuditResult) {
-    let p_now = ncd_test(stream);
-    meta_history_push(thread_id, "ncd_test", p_now);    
-    (p_now, global_uniformity_audit("ncd_test"))
-}
 
 // ================================================================
 //  Empirical byte entropy H = -Σ p(x) log2 p(x)
@@ -1598,10 +1527,6 @@ fn byte_entropy(data: &[u8]) -> f64 {
 
 pub fn entropy_rate_stability_test(stream: &BitByteStream) -> f64 {
     let n = stream.byte_len;
-    if n < 1024 {
-        return 0.0;
-    }
-
     let bytes = &stream.bytes;
 
     // Multi-scale prefix lengths
@@ -1615,7 +1540,8 @@ pub fn entropy_rate_stability_test(stream: &BitByteStream) -> f64 {
     let mut rates = Vec::new();
 
     for &len in &scales {
-        if len < 256 { continue; } // Ensure enough samples for a distribution
+        // Ensure enough samples for a distribution    
+        if len < 256 { continue; }
         let h = byte_entropy(&bytes[..len]);
         // Rate is bits per symbol (should be ~8.0)
         rates.push(h); 
@@ -1639,20 +1565,12 @@ pub fn entropy_rate_stability_test(stream: &BitByteStream) -> f64 {
     // We scale the drift to create a Z-score.
     // At 1.25MB, the expected variance in H is extremely low (~1e-6).
     let stat = drift * (n as f64).sqrt() / 8.0;
-
-    let p = 2.0 * (1.0 - normal_cdf(stat.abs()));
-
-    if p.is_nan() { 0.0 } else { p.clamp(0.0, 1.0) }
+    sanitize_p(2.0 * (1.0 - normal_cdf(stat.abs())))
 }
 
 pub fn entropy_rate_stability_deep_dive_test(stream: &BitByteStream) -> f64 {
     let n = stream.byte_len;
-    if n < 65536 { return 0.0; } // Deep dive requires high density
-
     let bytes = &stream.bytes;
-
-    // We split the 1.25MB stream into 4 large sequential blocks
-    // This measures local vs global stability
     let k = 4;
     let seg_len = n / k;
     let mut conditional_entropies = Vec::with_capacity(k);
@@ -1690,7 +1608,6 @@ pub fn entropy_rate_stability_deep_dive_test(stream: &BitByteStream) -> f64 {
                 h_marginal -= p * p.log2();
             }
         }
-
         conditional_entropies.push(h_joint - h_marginal);
     }
 
@@ -1707,38 +1624,74 @@ pub fn entropy_rate_stability_deep_dive_test(stream: &BitByteStream) -> f64 {
     // Statistical scaling for conditional entropy stability
     // For 1.25MB, the variance should be extremely tight.
     let stat = drift * (seg_len as f64).sqrt();
-    let p = 2.0 * (1.0 - normal_cdf(stat.abs()));
-
-    if p.is_nan() { 0.0 } else { p.clamp(0.0, 1.0) }
+    sanitize_p(2.0 * (1.0 - normal_cdf(stat.abs())))
 }
 
-// ----------------------------------------------------------------
-// Entropy Rate Stability Audit Wrappers (Thread-Aware)
-// ----------------------------------------------------------------
+pub fn run_tests(thread_id: usize, stream: &BitByteStream) {
+    let bucket = get_sampling_frequency_bucket(&stream.bit_len);
+		
+	// byte frequency test
+	let bfp = meta_test_wrapper(thread_id, "byte_frequency", stream, byte_frequency_test);
+    let bfg: GlobalAuditResult = global_uniformity_audit(thread_id, "byte_frequency", bucket);
 
-pub fn entropy_rate_stability_history(thread_id: usize, stream: &BitByteStream) -> f64 {
-    meta_test_wrapper(thread_id, "entropy_rate_stability", stream, entropy_rate_stability_test)
+    // gini randomness test
+	let grp = meta_test_wrapper(thread_id, "gini_randomness", stream, gini_randomness_test);
+	let grg: GlobalAuditResult = global_uniformity_audit(thread_id, "gini_randomness", bucket);
+
+    // gap test
+	let gtp = meta_test_wrapper(thread_id, "gap_test", stream, gap_test);
+	let gtg: GlobalAuditResult = global_uniformity_audit(thread_id, "gap_test", bucket);
+
+    // turning point test
+	let tpp = meta_test_wrapper(thread_id, "turning_point", stream, turning_point_test);
+	let tpg: GlobalAuditResult = global_uniformity_audit(thread_id, "turning_point", bucket);
+
+    // lz76 complexity test
+	let lzp = meta_test_wrapper(thread_id, "lz76_complexity", stream, lz76_complexity_test);
+	let lzg: GlobalAuditResult = global_uniformity_audit(thread_id, "lz76_complexity", bucket);
+
+    // maurer universal - BYTE test
+	let mbp = meta_test_wrapper(thread_id, "maurer_universal_byte", stream, maurer_universal_byte_test);
+    let mbg: GlobalAuditResult = global_uniformity_audit(thread_id, "maurer_universal_byte", bucket);
+
+    // spectral CSD Test
+	let scp = meta_test_wrapper(thread_id, "spectral_csd", stream, spectral_csd_test);
+	let scg: GlobalAuditResult = global_uniformity_audit(thread_id, "spectral_csd", bucket);
+
+    // NIST cumulative sum tes - split and refactored for efficiency
+	let cfp = meta_test_wrapper(thread_id, "cusum_forward", stream, cusum_forward_test);
+    let cfg: GlobalAuditResult = global_uniformity_audit(thread_id, "cusum_forward", bucket);
+    
+	let crp = meta_test_wrapper(thread_id, "cusum_reverse", stream, cusum_reverse_test);
+	let crg: GlobalAuditResult = global_uniformity_audit(thread_id, "cusum_reverse", bucket);
+	
+	// KL divergence tests
+	let klp = meta_test_wrapper(thread_id, "kl_divergence", stream, kl_divergence_test);
+	let klg: GlobalAuditResult = global_uniformity_audit(thread_id, "kl_divergence", bucket);
+	
+	let kdp = meta_test_wrapper(thread_id, "kl_divergence_deep_dive", stream, kl_divergence_deep_dive_test)
+	let kdg: GlobalAuditResult = global_uniformity_audit(thread_id, "kl_divergence_deep_dive", bucket);
+	
+	// LZ76 segment similarity test
+	let lsp = meta_test_wrapper(thread_id, "lz76_segment_similarity", stream, lz76_segment_similarity_test)
+	let lsg: GlobalAuditResult = global_uniformity_audit(thread_id, "lz76_segment_similarity", bucket);
+	
+	// NCD history test
+	let ncp = meta_test_wrapper(thread_id, "ncd_test", stream, ncd_test)
+	let ncg: GlobalAuditResult = global_uniformity_audit(thread_id, "ncd_test", bucket);
+	
+	// entropy rate stability test
+	let erp = meta_test_wrapper(thread_id, "entropy_rate_stability", stream, entropy_rate_stability_test)
+	let erg: GlobalAuditResult = global_uniformity_audit(thread_id, "entropy_rate_stability", bucket);
+	
+	let edp = meta_test_wrapper(thread_id, "entropy_rate_stability_deep_dive", stream, entropy_rate_stability_deep_dive_test)
+	let edg: GlobalAuditResult = global_uniformity_audit(thread_id, "entropy_rate_stability_deep_dive", bucket);
+	
+	
+	// ... carry on through the tests 
 }
 
-pub fn entropy_rate_stability_now_and_audit(thread_id: usize, stream: &BitByteStream) -> (f64, GlobalAuditResult) {
-    let p_now = entropy_rate_stability_test(stream);
-    meta_history_push(thread_id, "entropy_rate_stability", p_now);    
-    (p_now, global_uniformity_audit("entropy_rate_stability"))
-}
 
-// ----------------------------------------------------------------
-// Entropy Rate Stability Deep Dive Audit Wrappers (Thread-Aware)
-// ----------------------------------------------------------------
-
-pub fn entropy_rate_stability_deep_dive_history(thread_id: usize, stream: &BitByteStream) -> f64 {
-    meta_test_wrapper(thread_id, "entropy_rate_stability_deep_dive", stream, entropy_rate_stability_deep_dive_test)
-}
-
-pub fn entropy_rate_stability_deep_dive_now_and_audit(thread_id: usize, stream: &BitByteStream) -> (f64, GlobalAuditResult) {
-    let p_now = entropy_rate_stability_deep_dive_test(stream);  
-    meta_history_push(thread_id, "entropy_rate_stability_deep_dive", p_now);    
-    (p_now, global_uniformity_audit("entropy_rate_stability_deep_dive"))
-}
 
 // ================================================================
 //  Star Discrepancy Test (3D embedding)
