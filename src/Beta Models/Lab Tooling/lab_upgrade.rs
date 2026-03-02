@@ -1318,9 +1318,6 @@ pub fn kl_divergence_test(stream: &BitByteStream) -> f64 {
 
 pub fn kl_divergence_deep_dive_test(stream: &BitByteStream) -> f64 {
     let n = stream.byte_len;
-    if n < 2 {
-        return 0.0;
-    }
 
     // 256×256 transition matrix
     let mut transitions = vec![0usize; 65536];
@@ -1732,107 +1729,282 @@ pub fn entropy_rate_stability_deep_dive_test(stream: &BitByteStream) -> f64 {
 // ================================================================
 
 pub fn star_discrepancy_test(stream: &BitByteStream) -> f64 {
-    let n = stream.byte_len;    
-    let bytes = &stream.bytes;
-    
-	let mut points = Vec::with_capacity(n / 3);
-    for i in (0..n.saturating_sub(2)).step_by(3) {
-        points.push((
-            bytes[i] as f64 / 255.0,
-            bytes[i + 1] as f64 / 255.0,
-            bytes[i + 2] as f64 / 255.0,
-        ));
+    let m = stream.points_len as f64;
+    if m == 0.0 {
+        return 0.0;
     }
 
-    let m = points.len() as f64;
     const G: usize = 6;
+    let prefix = &stream.prefix6;
+
     let mut max_diff = 0.0;
 
-    for i in 1..=G {
-        let u = i as f64 / G as f64;
-        for j in 1..=G {
-            let v = j as f64 / G as f64;
-            for k in 1..=G {
-                let w = k as f64 / G as f64;
-                let mut count = 0usize;
-                for &(px, py, pz) in &points {
-                    if px <= u && py <= v && pz <= w { count += 1; }
+    for i in 0..G {
+        let u = (i + 1) as f64 / G as f64;
+        for j in 0..G {
+            let v = (j + 1) as f64 / G as f64;
+            for k in 0..G {
+                let w = (k + 1) as f64 / G as f64;
+
+                let count = prefix[i][j][k] as f64;
+                let expected = u * v * w;
+                let diff = (count / m - expected).abs();
+
+                if diff > max_diff {
+                    max_diff = diff;
                 }
-                let diff = ((count as f64 / m) - (u * v * w)).abs();
-                if diff > max_diff { max_diff = diff; }
             }
         }
     }
 
-    let stat = max_diff * m.sqrt();
-    let p = 1.0 - normal_cdf(stat);
-    if p.is_nan() { 0.0 } else { p.clamp(0.0, 1.0) }
+    sanitize_p(1.0 - normal_cdf(max_diff * m.sqrt()))
 }
 
 pub fn star_discrepancy_deep_dive_test(stream: &BitByteStream) -> f64 {
-    let n = stream.byte_len;
-    let bytes = &stream.bytes;
-
-    let mut points = Vec::with_capacity(n / 3);
-    for i in (0..n.saturating_sub(2)).step_by(3) {
-        points.push((
-            bytes[i] as f64 / 255.0,
-            bytes[i + 1] as f64 / 255.0,
-            bytes[i + 2] as f64 / 255.0,
-        ));
+    let m = stream.points_len as f64;
+    if m == 0.0 {
+        return 0.0;
     }
 
-    let m = points.len() as f64;
-    // G=16 creates 4,096 test boxes for high-resolution analysis
     const G: usize = 16;
+    let prefix = &stream.prefix16;
+
     let mut max_diff = 0.0;
 
-    for i in 1..=G {
-        let u = i as f64 / G as f64;
-        for j in 1..=G {
-            let v = j as f64 / G as f64;
-            for k in 1..=G {
-                let w = k as f64 / G as f64;
-                let mut count = 0usize;
-                for &(px, py, pz) in &points {
-                    if px <= u && py <= v && pz <= w { count += 1; }
+    for i in 0..G {
+        let u = (i + 1) as f64 / G as f64;
+        for j in 0..G {
+            let v = (j + 1) as f64 / G as f64;
+            for k in 0..G {
+                let w = (k + 1) as f64 / G as f64;
+
+                let count = prefix[i][j][k] as f64;
+                let expected = u * v * w;
+                let diff = (count / m - expected).abs();
+
+                if diff > max_diff {
+                    max_diff = diff;
                 }
-                let diff = ((count as f64 / m) - (u * v * w)).abs();
-                if diff > max_diff { max_diff = diff; }
             }
         }
     }
 
-    // At 10M bits, we use a more rigorous K-S mapping for the max difference
-    let stat = max_diff * m.sqrt();
-    let p = 1.0 - normal_cdf(stat);
-    if p.is_nan() { 0.0 } else { p.clamp(0.0, 1.0) }
+    sanitize_p(1.0 - normal_cdf(max_diff * m.sqrt()))
+}
+
+// ================================================================
+//  Correlation Dimension Test (3D embedding)
+//  Measures intrinsic dimensionality of the attractor
+//  Returns: p-value (f64)
+// ================================================================
+
+pub fn chaos_01_test(stream: &BitByteStream) -> f64 {
+    let n = stream.byte_len;
+
+    // Use normalized 0–1 floats already stored in the stream
+    let x = &stream.points_3d_f32; // but we only need the first component
+    let m = x.len();
+    if m < n {
+        // fallback if points_3d_f32 is shorter (should not happen)
+        return 0.0;
+    }
+
+    // Precompute jj = (j+1) as f64 for all j
+    let mut jj_vals = Vec::with_capacity(n);
+    for j in 0..n {
+        jj_vals.push((j + 1) as f64);
+    }
+
+    // c-values used in the standard Chaos-01 test
+    let cs = [1.2345, 2.3456, 3.4567];
+    let mut k_values = Vec::with_capacity(cs.len());
+
+    for &c in &cs {
+        let mut p = 0.0;
+        let mut q = 0.0;
+
+        // m_vals and idx_vals are only used for correlation()
+        let mut m_vals = Vec::with_capacity(n);
+
+        for j in 0..n {
+            let xj = x[j].0 as f64; // use first coordinate only
+            let jj = jj_vals[j];
+            let angle = jj * c;
+
+            p += xj * angle.cos();
+            q += xj * angle.sin();
+
+            m_vals.push(p * p + q * q);
+        }
+
+        // idx_vals is simply 1..n
+        let k = correlation(&jj_vals, &m_vals);
+        k_values.push(k);
+    }
+
+    let k_mean = k_values.iter().sum::<f64>() / (k_values.len() as f64);
+    let deviation = (k_mean - 1.0).abs();
+
+    sanitize_p(2.0 * (1.0 - normal_cdf(deviation * (n as f64).sqrt())))
+}
+
+pub fn correlation_dimension_deep_dive_test(stream: &BitByteStream) -> f64 {
+    let idx = &stream.subsample_2k;
+    let pts = &stream.points_3d_u8;
+
+    let m = idx.len();
+    if m < 10 {
+        return 0.0;
+    }
+
+    let r_scales = [20.0f64, 40.0, 60.0, 80.0];
+    let mut counts = [0usize; 4];
+
+    for a in 0..m {
+        let (x1_u, y1_u, z1_u) = pts[idx[a]];
+        let x1 = x1_u as f64;
+        let y1 = y1_u as f64;
+        let z1 = z1_u as f64;
+
+        for b in (a + 1)..m {
+            let (x2_u, y2_u, z2_u) = pts[idx[b]];
+            let dx = x1 - x2_u as f64;
+            let dy = y1 - y2_u as f64;
+            let dz = z1 - z2_u as f64;
+            let d2 = dx*dx + dy*dy + dz*dz;
+
+            for (i, r) in r_scales.iter().enumerate() {
+                if d2 < r * r {
+                    counts[i] += 1;
+                }
+            }
+        }
+    }
+
+    if counts[0] == 0 || counts[3] == 0 {
+        return 0.0;
+    }
+
+    let y1 = (counts[0] as f64).ln();
+    let y2 = (counts[3] as f64).ln();
+    let x1 = r_scales[0].ln();
+    let x2 = r_scales[3].ln();
+    
+    sanitize_p(2.0 * (1.0 - normal_cdf((((y2 - y1) / (x2 - x1)) - 3.0).abs() * 5.0)))
+}
+
+// ================================================================
+//  0–1 Chaos Test (K-statistic)
+//  Measures chaotic vs regular vs random behavior
+//  Returns: p-value (f64)
+// ================================================================
+
+pub fn chaos_01_deep_dive_test(stream: &BitByteStream) -> f64 {
+    let n = stream.byte_len;
+    if n < 1000 {
+        return 0.0;
+    }
+
+    // Use normalized 0–1 floats already stored
+    let x = &stream.points_3d_f32;
+    let m = x.len();
+    if m < n {
+        return 0.0;
+    }
+
+    // Precompute jj = (j+1) as f64
+    let mut jj_vals = Vec::with_capacity(n);
+    for j in 0..n {
+        jj_vals.push((j + 1) as f64);
+    }
+
+    // Expanded c-values for deep-dive harmonic scanning
+    let cs = [1.12, 1.34, 1.56, 1.78, 2.01, 2.23, 2.45, 2.67, 2.89, 3.11];
+    let mut k_values = Vec::with_capacity(cs.len());
+
+    for &c in &cs {
+        let mut p = 0.0;
+        let mut q = 0.0;
+
+        let mut m_vals = Vec::with_capacity(n);
+
+        for j in 0..n {
+            let xj = x[j].0 as f64;
+            let jj = jj_vals[j];
+            let angle = jj * c;
+
+            p += xj * angle.cos();
+            q += xj * angle.sin();
+
+            m_vals.push(p * p + q * q);
+        }
+
+        k_values.push(correlation(&jj_vals, &m_vals));
+    }
+
+    // Median K is more robust for deep-dive
+    k_values.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let k_med = k_values[k_values.len() / 2];
+
+    sanitize_p(2.0 * (1.0 - normal_cdf((k_med - 1.0).abs())))
+}
+
+pub fn chaos_01_deep_dive_test(stream: &BitByteStream) -> f64 {
+    let n = stream.byte_len;
+    if n < 1000 { return 0.0; }
+
+    let x: Vec<f64> = stream.bytes.iter().map(|&b| b as f64 / 255.0).collect();
+    
+    // Expanded "sterile" c-values to scan for period-scramble harmonics
+    let cs = [1.12, 1.34, 1.56, 1.78, 2.01, 2.23, 2.45, 2.67, 2.89, 3.11];
+    let mut k_values = Vec::with_capacity(cs.len());
+
+    for &c in &cs {
+        let mut p = 0.0;
+        let mut q = 0.0;
+        let mut m_vals = Vec::with_capacity(n);
+        let mut idx_vals = Vec::with_capacity(n);
+
+        for j in 0..n {
+            let jj = (j + 1) as f64;
+            p += x[j] * (jj * c).cos();
+            q += x[j] * (jj * c).sin();
+            m_vals.push(p*p + q*q);
+            idx_vals.push(jj);
+        }
+        k_values.push(correlation(&idx_vals, &m_vals));
+    }
+
+    // Median K provides the most robust estimate for the 1.25MB health check
+    k_values.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let k_med = k_values[k_values.len() / 2];
+    
+	sanitize_p(2.0 * (1.0 - normal_cdf((k_med - 1.0).abs())))    
 }
 
 // ----------------------------------------------------------------
-// Star Discrepency Audit Wrappers (Thread-Aware)
+// Chaos 0-1 Test Audit Wrappers (Thread-Aware)
 // ----------------------------------------------------------------
 
-pub fn star_discrepancy_history(thread_id: usize, stream: &BitByteStream) -> f64 {
-    meta_test_wrapper(thread_id, "star_discrepancy", stream, star_discrepancy_test)
+pub fn chaos_01_history(thread_id: usize, stream: &BitByteStream) -> f64 {
+    meta_test_wrapper(thread_id, "chaos_01", stream, chaos_01_test)
 }
 
-pub fn star_discrepancy_now_and_audit(thread_id: usize, stream: &BitByteStream) -> (f64, GlobalAuditResult) {
-    let p_now = star_discrepancy_test(stream);
-    meta_history_push(thread_id, "star_discrepancy", p_now);
-    (p_now, global_uniformity_audit("star_discrepancy"))
+pub fn chaos_01_now_and_audit(thread_id: usize, stream: &BitByteStream) -> (f64, GlobalAuditResult) {
+    let p_now = chaos_01_test(stream);
+    meta_history_push(thread_id, "chaos_01", p_now);
+    (p_now, global_uniformity_audit("chaos_01"))
 }
 
-pub fn star_discrepancy_deep_dive_history(thread_id: usize, stream: &BitByteStream) -> f64 {
-    meta_test_wrapper(thread_id, "star_discrepancy_deep_dive", stream, star_discrepancy_deep_dive_test)
+pub fn chaos_01_deep_dive_history(thread_id: usize, stream: &BitByteStream) -> f64 {
+    meta_test_wrapper(thread_id, "chaos_01_deep_dive", stream, chaos_01_deep_dive_test)
 }
 
-pub fn star_discrepancy_deep_dive_now_and_audit(thread_id: usize, stream: &BitByteStream) -> (f64, GlobalAuditResult) {
-    let p_now = star_discrepancy_deep_dive_test(stream);
-    meta_history_push(thread_id, "star_discrepancy_deep_dive", p_now);
-    (p_now, global_uniformity_audit("star_discrepancy_deep_dive"))
+pub fn chaos_01_deep_dive_now_and_audit(thread_id: usize, stream: &BitByteStream) -> (f64, GlobalAuditResult) {
+    let p_now = chaos_01_deep_dive_test(stream);
+    meta_history_push(thread_id, "chaos_01_deep_dive", p_now);
+    (p_now, global_uniformity_audit("chaos_01_deep_dive"))
 }
-
 
 pub fn run_tests(thread_id: usize, stream: &BitByteStream) {
     let bucket = get_sampling_frequency_bucket(&stream.bit_len);
@@ -1876,258 +2048,41 @@ pub fn run_tests(thread_id: usize, stream: &BitByteStream) {
 	let klp = meta_test_wrapper(thread_id, "kl_divergence", stream, kl_divergence_test);
 	let klg: GlobalAuditResult = global_uniformity_audit(thread_id, "kl_divergence", bucket);
 	
-	let kdp = meta_test_wrapper(thread_id, "kl_divergence_deep_dive", stream, kl_divergence_deep_dive_test)
+	let kdp = meta_test_wrapper(thread_id, "kl_divergence_deep_dive", stream, kl_divergence_deep_dive_test);
 	let kdg: GlobalAuditResult = global_uniformity_audit(thread_id, "kl_divergence_deep_dive", bucket);
 	
 	// LZ76 segment similarity test
-	let lsp = meta_test_wrapper(thread_id, "lz76_segment_similarity", stream, lz76_segment_similarity_test)
+	let lsp = meta_test_wrapper(thread_id, "lz76_segment_similarity", stream, lz76_segment_similarity_test);
 	let lsg: GlobalAuditResult = global_uniformity_audit(thread_id, "lz76_segment_similarity", bucket);
 	
 	// NCD history test
-	let ncp = meta_test_wrapper(thread_id, "ncd_test", stream, ncd_test)
+	let ncp = meta_test_wrapper(thread_id, "ncd_test", stream, ncd_test);
 	let ncg: GlobalAuditResult = global_uniformity_audit(thread_id, "ncd_test", bucket);
 	
 	// entropy rate stability test
-	let erp = meta_test_wrapper(thread_id, "entropy_rate_stability", stream, entropy_rate_stability_test)
+	let erp = meta_test_wrapper(thread_id, "entropy_rate_stability", stream, entropy_rate_stability_test);
 	let erg: GlobalAuditResult = global_uniformity_audit(thread_id, "entropy_rate_stability", bucket);
 	
-	let edp = meta_test_wrapper(thread_id, "entropy_rate_stability_deep_dive", stream, entropy_rate_stability_deep_dive_test)
+	let edp = meta_test_wrapper(thread_id, "entropy_rate_stability_deep_dive", stream, entropy_rate_stability_deep_dive_test);
 	let edg: GlobalAuditResult = global_uniformity_audit(thread_id, "entropy_rate_stability_deep_dive", bucket);
 	
+	// star discrepancy test
+	let ssp = meta_test_wrapper(thread_id, "star_discrepancy", stream, star_discrepancy_test)
+	let ssg: GlobalAuditResult = global_uniformity_audit(thread_id, "star_discrepancy", bucket);
+	
+	let sdp = meta_test_wrapper(thread_id, "star_discrepancy_deep_dive", stream, star_discrepancy_deep_dive_test)
+	let sdg: GlobalAuditResult = global_uniformity_audit(thread_id, "star_discrepancy_deep_dive", bucket);
+	
+	// correlation dimension tests
+	let ctp = meta_test_wrapper(thread_id, "correlation_dimension", stream, correlation_dimension_test);
+	let ctg: GlobalAuditResult = global_uniformity_audit(thread_id, "correlation_dimension", bucket);
+    
+	let cdp = meta_test_wrapper(thread_id, "correlation_dimension_deep_dive", stream, correlation_dimension_deep_dive_test);		
+	let cdg: GlobalAuditResult = global_uniformity_audit(thread_id, "correlation_dimension_deep_dive", bucket);
 	
 	// ... carry on through the tests 
 }
 
-// ================================================================
-//  Correlation Dimension Test (3D embedding)
-//  Measures intrinsic dimensionality of the attractor
-//  Returns: p-value (f64)
-// ================================================================
-
-pub fn correlation_dimension_test(stream: &BitByteStream) -> f64 {
-    let n = stream.byte_len;
-    if n < 900 { return 0.0; }
-
-    let bytes = &stream.bytes;
-    // Subsample for O(M^2) feasibility in standard runs
-    let step = if n > 30000 { n / 1000 } else { 3 };
-    let mut points = Vec::new();
-    for i in (0..n.saturating_sub(2)).step_by(step) {
-        points.push((
-            bytes[i] as f64 / 255.0,
-            bytes[(i + 1) % n] as f64 / 255.0,
-            bytes[(i + 2) % n] as f64 / 255.0,
-        ));
-    }
-
-    let m = points.len();
-    let (r1, r2) = (0.15, 0.35);
-    let (mut c1, mut c2) = (0usize, 0usize);
-
-    for i in 0..m {
-        for j in (i + 1)..m {
-            let dx = points[i].0 - points[j].0;
-            let dy = points[i].1 - points[j].1;
-            let dz = points[i].2 - points[j].2;
-            let dist_sq = dx*dx + dy*dy + dz*dz;
-
-            if dist_sq < r1 * r1 { c1 += 1; }
-            if dist_sq < r2 * r2 { c2 += 1; }
-        }
-    }
-
-    let m_pairs = (m * (m - 1) / 2) as f64;
-    let c1_f = c1 as f64 / m_pairs;
-    let c2_f = c2 as f64 / m_pairs;
-
-    if c1_f <= 0.0 || c2_f <= 0.0 { return 0.0; }
-
-    let d2 = (c2_f.ln() - c1_f.ln()) / (r2.ln() - r1.ln());
-    
-    // Z-score: deviation from 3.0
-    // We use a broader sigma here because D2 converges slowly
-    let stat = (d2 - 3.0).abs() * (m as f64).sqrt() * 0.1;
-    let p = 2.0 * (1.0 - normal_cdf(stat));
-
-    if p.is_nan() { 0.0 } else { p.clamp(0.0, 1.0) }
-}
-
-
-pub fn correlation_dimension_deep_dive_test(stream: &BitByteStream) -> f64 {
-    let n = stream.byte_len;
-    // Deep dive uses more points for higher fractal resolution
-    let bytes = &stream.bytes;
-    let mut points = Vec::with_capacity(2000);
-    let step = (n / 2000).max(3);
-    
-    for i in (0..n.saturating_sub(2)).step_by(step) {
-        points.push((bytes[i] as f64, bytes[(i+1)%n] as f64, bytes[(i+2)%n] as f64));
-    }
-
-    let m = points.len();
-    let r_scales = [20.0, 40.0, 60.0, 80.0]; // Integer space 0-255 for precision
-    let mut counts = [0usize; 4];
-
-    for i in 0..m {
-        for j in (i + 1)..m {
-            let d_sq = (points[i].0 - points[j].0).powi(2) + 
-                       (points[i].1 - points[j].1).powi(2) + 
-                       (points[i].2 - points[j].2).powi(2);
-            for (idx, &r) in r_scales.iter().enumerate() {
-                if d_sq < r * r { counts[idx] += 1; }
-            }
-        }
-    }
-
-    // Regression on ln(C(r)) vs ln(r) to find the slope (D2)
-    // For random data, this slope MUST be 3.0. 
-    // If it's 1.0 or 2.0, your scramble is generating lines or planes.
-    let y1 = (counts[0] as f64).ln();
-    let y2 = (counts[3] as f64).ln();
-    let x1 = r_scales[0].ln();
-    let x2 = r_scales[3].ln();
-    
-    let d2 = (y2 - y1) / (x2 - x1);
-    let stat = (d2 - 3.0).abs() * 5.0; // High sensitivity multiplier
-
-    let p = 2.0 * (1.0 - normal_cdf(stat));
-    if p.is_nan() { 0.0 } else { p.clamp(0.0, 1.0) }
-}
-
-// ----------------------------------------------------------------
-// Correlation Dimension Audit Wrappers (Thread-Aware)
-// ----------------------------------------------------------------
-
-pub fn correlation_dimension_history(thread_id: usize, stream: &BitByteStream) -> f64 {
-    meta_test_wrapper(thread_id, "correlation_dimension", stream, correlation_dimension_test)
-}
-
-pub fn correlation_dimension_now_and_audit(thread_id: usize, stream: &BitByteStream) -> (f64, GlobalAuditResult) {
-    let p_now = correlation_dimension_test(stream);
-    meta_history_push(thread_id, "correlation_dimension", p_now);
-    (p_now, global_uniformity_audit("correlation_dimension"))
-}
-
-pub fn correlation_dimension_deep_dive_history(thread_id: usize, stream: &BitByteStream) -> f64 {
-    meta_test_wrapper(thread_id, "correlation_dimension_deep_dive", stream, correlation_dimension_deep_dive_test)
-}
-
-pub fn correlation_dimension_deep_dive_now_and_audit(thread_id: usize, stream: &BitByteStream) -> (f64, GlobalAuditResult) {
-    let p_now = correlation_dimension_deep_dive_test(stream);
-    meta_history_push(thread_id, "correlation_dimension_deep_dive", p_now);
-    (p_now, global_uniformity_audit("correlation_dimension_deep_dive"))
-}
-
-// ================================================================
-//  0–1 Chaos Test (K-statistic)
-//  Measures chaotic vs regular vs random behavior
-//  Returns: p-value (f64)
-// ================================================================
-
-pub fn chaos_01_test(stream: &BitByteStream) -> f64 {
-    let n = stream.byte_len;
-    if n < 300 {
-        return 0.5; 
-    }
-
-    let mut x = Vec::with_capacity(n);
-    for &b in &stream.bytes {
-        x.push(b as f64 / 255.0);
-    }
-
-    let cs = [1.2345, 2.3456, 3.4567];
-    let mut k_values = Vec::new();
-
-    for &c in &cs {
-        let mut p = 0.0;
-        let mut q = 0.0;
-        let mut m_vals = Vec::with_capacity(n);
-        let mut idx_vals = Vec::with_capacity(n);
-
-        for j in 0..n {
-            let jj = (j + 1) as f64;
-            p += x[j] * (jj * c).cos();
-            q += x[j] * (jj * c).sin();
-
-            let m = p*p + q*q;
-            m_vals.push(m);
-            idx_vals.push(jj);
-        }
-
-        let k = correlation(&idx_vals, &m_vals);
-        k_values.push(k);
-    }
-
-    let k_mean = k_values.iter().sum::<f64>() / (k_values.len() as f64);
-    let deviation = (k_mean - 1.0).abs();
-    
-    // Normalized statistic for P-value mapping
-    let stat = deviation * (n as f64).sqrt();
-    let p = 2.0 * (1.0 - normal_cdf(stat));
-
-    if p.is_nan() { 0.0 } else { p.clamp(0.0, 1.0) }
-}
-
-pub fn chaos_01_deep_dive_test(stream: &BitByteStream) -> f64 {
-    let n = stream.byte_len;
-    if n < 1000 { return 0.0; }
-
-    let x: Vec<f64> = stream.bytes.iter().map(|&b| b as f64 / 255.0).collect();
-    
-    // Expanded "sterile" c-values to scan for period-scramble harmonics
-    let cs = [1.12, 1.34, 1.56, 1.78, 2.01, 2.23, 2.45, 2.67, 2.89, 3.11];
-    let mut k_values = Vec::with_capacity(cs.len());
-
-    for &c in &cs {
-        let mut p = 0.0;
-        let mut q = 0.0;
-        let mut m_vals = Vec::with_capacity(n);
-        let mut idx_vals = Vec::with_capacity(n);
-
-        for j in 0..n {
-            let jj = (j + 1) as f64;
-            p += x[j] * (jj * c).cos();
-            q += x[j] * (jj * c).sin();
-            m_vals.push(p*p + q*q);
-            idx_vals.push(jj);
-        }
-        k_values.push(correlation(&idx_vals, &m_vals));
-    }
-
-    // Median K provides the most robust estimate for the 1.25MB health check
-    k_values.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    let k_med = k_values[k_values.len() / 2];
-
-    let deviation = (k_med - 1.0).abs();
-    let stat = deviation * (n as f64).sqrt();
-    let p = 2.0 * (1.0 - normal_cdf(stat));
-
-    if p.is_nan() { 0.0 } else { p.clamp(0.0, 1.0) }
-}
-
-// ----------------------------------------------------------------
-// Chaos 0-1 Test Audit Wrappers (Thread-Aware)
-// ----------------------------------------------------------------
-
-pub fn chaos_01_history(thread_id: usize, stream: &BitByteStream) -> f64 {
-    meta_test_wrapper(thread_id, "chaos_01", stream, chaos_01_test)
-}
-
-pub fn chaos_01_now_and_audit(thread_id: usize, stream: &BitByteStream) -> (f64, GlobalAuditResult) {
-    let p_now = chaos_01_test(stream);
-    meta_history_push(thread_id, "chaos_01", p_now);
-    (p_now, global_uniformity_audit("chaos_01"))
-}
-
-pub fn chaos_01_deep_dive_history(thread_id: usize, stream: &BitByteStream) -> f64 {
-    meta_test_wrapper(thread_id, "chaos_01_deep_dive", stream, chaos_01_deep_dive_test)
-}
-
-pub fn chaos_01_deep_dive_now_and_audit(thread_id: usize, stream: &BitByteStream) -> (f64, GlobalAuditResult) {
-    let p_now = chaos_01_deep_dive_test(stream);
-    meta_history_push(thread_id, "chaos_01_deep_dive", p_now);
-    (p_now, global_uniformity_audit("chaos_01_deep_dive"))
-}
 
 // ================================================================
 //  Sample Entropy Test (SampEn)
