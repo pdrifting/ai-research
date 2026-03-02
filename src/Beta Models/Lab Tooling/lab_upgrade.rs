@@ -1901,9 +1901,6 @@ pub fn correlation_dimension_deep_dive_test(stream: &BitByteStream) -> f64 {
 
 pub fn chaos_01_deep_dive_test(stream: &BitByteStream) -> f64 {
     let n = stream.byte_len;
-    if n < 1000 {
-        return 0.0;
-    }
 
     // Use normalized 0–1 floats already stored
     let x = &stream.points_3d_f32;
@@ -1951,7 +1948,6 @@ pub fn chaos_01_deep_dive_test(stream: &BitByteStream) -> f64 {
 
 pub fn chaos_01_deep_dive_test(stream: &BitByteStream) -> f64 {
     let n = stream.byte_len;
-    if n < 1000 { return 0.0; }
 
     let x: Vec<f64> = stream.bytes.iter().map(|&b| b as f64 / 255.0).collect();
     
@@ -1982,28 +1978,52 @@ pub fn chaos_01_deep_dive_test(stream: &BitByteStream) -> f64 {
 	sanitize_p(2.0 * (1.0 - normal_cdf((k_med - 1.0).abs())))    
 }
 
-// ----------------------------------------------------------------
-// Chaos 0-1 Test Audit Wrappers (Thread-Aware)
-// ----------------------------------------------------------------
+// ================================================================
+//  Sample Entropy Test (SampEn)
+//  Measures regularity without self-matches
+//  Returns: p-value (f64)
+// ================================================================
 
-pub fn chaos_01_history(thread_id: usize, stream: &BitByteStream) -> f64 {
-    meta_test_wrapper(thread_id, "chaos_01", stream, chaos_01_test)
-}
+pub fn sample_entropy_scaling_test(stream: &BitByteStream) -> f64 {
+    let n = stream.byte_len;
 
-pub fn chaos_01_now_and_audit(thread_id: usize, stream: &BitByteStream) -> (f64, GlobalAuditResult) {
-    let p_now = chaos_01_test(stream);
-    meta_history_push(thread_id, "chaos_01", p_now);
-    (p_now, global_uniformity_audit("chaos_01"))
-}
+    let x: Vec<f64> = stream.points_3d_f32.iter().map(|p| p.0 as f64).collect();
+    let sd = stddev(&x);
+    if sd <= 0.0 {
+        return 0.0;
+    }
 
-pub fn chaos_01_deep_dive_history(thread_id: usize, stream: &BitByteStream) -> f64 {
-    meta_test_wrapper(thread_id, "chaos_01_deep_dive", stream, chaos_01_deep_dive_test)
-}
+    let bucket = get_sampling_frequency_bucket(n);
+    let m = if bucket <= 2 { 2 } else { 3 };
+    let r = if m == 2 { 0.20 * sd } else { 0.15 * sd };
 
-pub fn chaos_01_deep_dive_now_and_audit(thread_id: usize, stream: &BitByteStream) -> (f64, GlobalAuditResult) {
-    let p_now = chaos_01_deep_dive_test(stream);
-    meta_history_push(thread_id, "chaos_01_deep_dive", p_now);
-    (p_now, global_uniformity_audit("chaos_01_deep_dive"))
+    let limit = match bucket {
+        0 => n.min(2000),
+        1 => n.min(2000),
+        2 => n.min(3000),
+        3 => n.min(4000),
+        4 => n.min(5000),
+        5 => n.min(6000),
+        _ => n.min(8000),
+    };
+
+    let b = count_matches(&x[..limit], m, r);
+    let a = count_matches(&x[..limit], m + 1, r);
+
+    if b == 0 || a == 0 {
+        return 0.0;
+    }
+
+    let sampen = -((a as f64) / (b as f64)).ln();
+    
+    let expected = if m == 2 {
+        [2.20, 2.18, 2.16, 2.15, 2.14, 2.13, 2.12][bucket]
+    } else {
+        [3.10, 3.08, 3.06, 3.05, 3.04, 3.03, 3.02][bucket]
+    };
+
+    let deviation = (sampen - expected).abs();    
+    sanitize_p(2.0 * (1.0 - normal_cdf(deviation * (limit as f64).sqrt())))
 }
 
 pub fn run_tests(thread_id: usize, stream: &BitByteStream) {
@@ -2079,99 +2099,20 @@ pub fn run_tests(thread_id: usize, stream: &BitByteStream) {
     
 	let cdp = meta_test_wrapper(thread_id, "correlation_dimension_deep_dive", stream, correlation_dimension_deep_dive_test);		
 	let cdg: GlobalAuditResult = global_uniformity_audit(thread_id, "correlation_dimension_deep_dive", bucket);
+
+    // chaos 01 test
+    let czp = meta_test_wrapper(thread_id, "chaos_01", stream, chaos_01_test);
+	let czg: GlobalAuditResult = global_uniformity_audit(thread_id, "chaos_01", bucket);
+
+	let czdp = meta_test_wrapper(thread_id, "chaos_01_deep_dive", stream, chaos_01_deep_dive_test);
+	let czdg: GlobalAuditResult = global_uniformity_audit(thread_id, "chaos_01_deep_dive", bucket);
+
+    // sample eentropy scaling test
+	let sep = meta_test_wrapper(thread_id, "sample_entropy_scaling", stream, sample_entropy_scaling_test);
+	let seg: GlobalAuditResult = global_uniformity_audit(thread_id, "byte_frequency", bucket);
+
 	
 	// ... carry on through the tests 
-}
-
-
-// ================================================================
-//  Sample Entropy Test (SampEn)
-//  Measures regularity without self-matches
-//  Returns: p-value (f64)
-// ================================================================
-
-pub fn sample_entropy_test(stream: &BitByteStream) -> f64 {
-    let n = stream.byte_len;
-    if n < 300 { return 0.0; }
-
-    let x: Vec<f64> = stream.bytes.iter().map(|&b| b as f64 / 255.0).collect();
-
-    let m = 2;
-    let sd = stddev(&x);
-    if sd <= 0.0 { return 0.0; }
-    let r = 0.2 * sd;
-
-    // Use a subset if data is very large to maintain O(N^2) feasibility
-    let limit = n.min(2000);
-    let b = count_matches(&x[..limit], m, r);
-    let a = count_matches(&x[..limit], m + 1, r);
-
-    if b == 0 || a == 0 { return 0.0; }
-
-    let sampen = -((a as f64) / (b as f64)).ln();
-    
-    // Theoretical SampEn for white noise at m=2, r=0.2 is ~2.2
-    let expected = 2.2;
-    let deviation = (sampen - expected).abs();
-
-    let stat = deviation * (limit as f64).sqrt() * 0.5;
-    let p = 2.0 * (1.0 - normal_cdf(stat));
-
-    if p.is_nan() { 0.0 } else { p.clamp(0.0, 1.0) }
-}
-
-pub fn sample_entropy_deep_dive_test(stream: &BitByteStream) -> f64 {
-    let n = stream.byte_len;
-    if n < 5000 { return 0.0; }
-
-    let x: Vec<f64> = stream.bytes.iter().map(|&b| b as f64 / 255.0).collect();
-
-    // High-resolution parameters
-    let m = 3; 
-    let sd = stddev(&x);
-    let r = 0.15 * sd; // Tighter tolerance for deep-dive
-
-    // Sample size for O(N^2) logic on the 10M bit stream
-    let limit = 4000;
-    let b = count_matches(&x[..limit], m, r);
-    let a = count_matches(&x[..limit], m + 1, r);
-
-    if b == 0 || a == 0 { return 0.0; }
-
-    let sampen = -((a as f64) / (b as f64)).ln();
-    
-    // At m=3, expected SampEn shifts higher
-    let expected = 3.1;
-    let deviation = (sampen - expected).abs();
-
-    let stat = deviation * (limit as f64).sqrt();
-    let p = 2.0 * (1.0 - normal_cdf(stat));
-
-    if p.is_nan() { 0.0 } else { p.clamp(0.0, 1.0) }
-}
-
-// ----------------------------------------------------------------
-// Sample Entropy Audit Wrappers (Thread-Aware)
-// ----------------------------------------------------------------
-
-pub fn sample_entropy_history(thread_id: usize, stream: &BitByteStream) -> f64 {
-    meta_test_wrapper(thread_id, "sample_entropy", stream, sample_entropy_test)
-}
-
-pub fn sample_entropy_now_and_audit(thread_id: usize, stream: &BitByteStream) -> (f64, GlobalAuditResult) {
-    let p_now = sample_entropy_test(stream);
-    meta_history_push(thread_id, "sample_entropy", p_now);
-    (p_now, global_uniformity_audit("sample_entropy"))
-}
-
-pub fn sample_entropy_deep_dive_history(thread_id: usize, stream: &BitByteStream) -> f64 {
-    meta_test_wrapper(thread_id, "sample_entropy_deep_dive", stream, sample_entropy_deep_dive_test)
-}
-
-pub fn sample_entropy_deep_dive_now_and_audit(thread_id: usize, stream: &BitByteStream) -> (f64, GlobalAuditResult) {
-    let p_now = sample_entropy_deep_dive_test(stream);
-    meta_history_push(thread_id, "sample_entropy_deep_dive", p_now);
-    (p_now, global_uniformity_audit("sample_entropy_deep_dive"))
 }
 
 // ================================================================
@@ -2180,15 +2121,29 @@ pub fn sample_entropy_deep_dive_now_and_audit(thread_id: usize, stream: &BitByte
 //  Returns: p-value (f64)
 // ================================================================
 
-pub fn snapshot_distance_matrix_test(stream: &BitByteStream) -> f64 {
+pub fn snapshot_distance_matrix_unified_test(stream: &BitByteStream) -> f64 {
     let n = stream.byte_len;
-    
-    // Strict requirement: If the stream doesn't meet the sample size, it's a 0.0 fail.
-    if n < 2048 { return 0.0; }
+    if n < 1024 {
+        return 0.0;
+    }
 
-    let k = 8;
+    let bucket = get_sampling_frequency_bucket(n);
+
+    // Choose number of segments k based on bucket
+    let k = match bucket {
+        0 => 8,
+        1 => 8,
+        2 => 12,
+        3 => 16,
+        4 => 16,
+        5 => 20,
+        _ => 24,
+    };
+
     let seg_len = n / k;
-    if seg_len < 128 { return 0.0; }
+    if seg_len < 128 {
+        return 0.0;
+    }
 
     let bytes = &stream.bytes;
     let mut features: Vec<Vec<f64>> = Vec::with_capacity(k);
@@ -2198,21 +2153,28 @@ pub fn snapshot_distance_matrix_test(stream: &BitByteStream) -> f64 {
         let end = if i == k - 1 { n } else { start + seg_len };
         let seg = &bytes[start..end];
 
+        // Frequency vector
         let mut freq = [0usize; 256];
-        for &b in seg { freq[b as usize] += 1; }
+        for &b in seg {
+            freq[b as usize] += 1;
+        }
 
         let seg_n = seg.len() as f64;
         let mut fv = Vec::with_capacity(258);
+
         for &c in freq.iter() {
             fv.push(c as f64 / seg_n);
         }
 
+        // Add entropy + LZ76 complexity
         fv.push(byte_entropy(seg));
-        fv.push(lz76_complexity_bytes(seg));
+        fv.push(lz76_complexity_bytes_sam(seg));
+
         features.push(fv);
     }
 
-    let mut distances = Vec::new();
+    // Compute pairwise distances
+    let mut distances = Vec::with_capacity(k * k / 2);
     for i in 0..k {
         for j in (i + 1)..k {
             distances.push(euclidean_distance(&features[i], &features[j]));
@@ -2220,72 +2182,20 @@ pub fn snapshot_distance_matrix_test(stream: &BitByteStream) -> f64 {
     }
 
     let m = distances.len() as f64;
-    if m == 0.0 { return 0.0; }
+    if m == 0.0 {
+        return 0.0;
+    }
 
     let mean = distances.iter().sum::<f64>() / m;
     let var = distances.iter().map(|&d| (d - mean).powi(2)).sum::<f64>() / m;
 
-    let expected_var = 0.01;
-    let deviation = (var - expected_var).abs();
+    // Expected variance depends on bucket
+    let expected_var = [0.010, 0.009, 0.008, 0.007, 0.006, 0.005, 0.004][bucket];
 
-    let stat = deviation * m.sqrt();
-    let p = 2.0 * (1.0 - normal_cdf(stat));
-
-    if p.is_nan() { 0.0 } else { p.clamp(0.0, 1.0) }
-}
-
-pub fn snapshot_distance_matrix_deep_dive_test(stream: &BitByteStream) -> f64 {
-    let n = stream.byte_len;
-    
-    // Strict Deep Dive Constraint: Requires 32KB minimum for 16-segment resolution
-    if n < 32768 { 
-        return 0.0; 
-    }
-
-    let k = 16;
-    let seg_len = n / k;
-    let bytes = &stream.bytes;
-    let mut features: Vec<Vec<f64>> = Vec::with_capacity(k);
-
-    for i in 0..k {
-        let start = i * seg_len;
-        let end = start + seg_len;
-        let seg = &bytes[start..end];
-
-        let mut freq = [0usize; 256];
-        for &b in seg { 
-            freq[b as usize] += 1; 
-        }
-
-        let mut fv = Vec::with_capacity(258);
-        for &c in freq.iter() {
-            fv.push(c as f64 / seg_len as f64);
-        }
-
-        // Feature-rich vector: Frequencies + Entropy + Complexity
-        fv.push(byte_entropy(seg));
-        fv.push(lz76_complexity_bytes(seg));
-        features.push(fv);
-    }
-
-    let mut distances = Vec::new();
-    for i in 0..k {
-        for j in (i + 1)..k {
-            distances.push(euclidean_distance(&features[i], &features[j]));
-        }
-    }
-
-    let m = distances.len() as f64;
-    let mean = distances.iter().sum::<f64>() / m;
-    let var = distances.iter().map(|&d| (d - mean).powi(2)).sum::<f64>() / m;
-
-    // Tightened variance for high-resolution 1.25MB health check
-    let expected_var = 0.005; 
     let stat = (var - expected_var).abs() * m.sqrt();
-    let p = 2.0 * (1.0 - normal_cdf(stat));
-
-    if p.is_nan() { 0.0 } else { p.clamp(0.0, 1.0) }
+    sanitize_p(2.0 * (1.0 - normal_cdf(stat)))
 }
+
 
 // ----------------------------------------------------------------
 // Snapshot Distance Matrix Audit Wrappers (Thread-Aware)
@@ -2317,25 +2227,40 @@ pub fn snapshot_distance_matrix_deep_dive_now_and_audit(thread_id: usize, stream
 //  Returns: p-value (f64)
 // ================================================================
 
-pub fn segment_clustering_test(stream: &BitByteStream) -> f64 {
+pub fn segment_clustering_scaling_test(stream: &BitByteStream) -> f64 {
     let n = stream.byte_len;
-    // Strict requirement: 2.5M bits is plenty, but we fail if data is missing.
-    if n < 2048 { return 0.0; }
 
-    let k = 8;
+    let bucket = get_sampling_frequency_bucket(n);
+
+    // Adaptive segment count
+    let k = match bucket {
+        0 => 8,
+        1 => 8,
+        2 => 12,
+        3 => 16,
+        4 => 16,
+        5 => 24,
+        _ => 32,
+    };
+
     let seg_len = n / k;
-    if seg_len < 128 { return 0.0; }
+    if seg_len < 128 {
+        return 0.0;
+    }
 
     let bytes = &stream.bytes;
     let mut features: Vec<Vec<f64>> = Vec::with_capacity(k);
 
+    // Build feature vectors
     for i in 0..k {
         let start = i * seg_len;
         let end = if i == k - 1 { n } else { start + seg_len };
         let seg = &bytes[start..end];
 
         let mut freq = [0usize; 256];
-        for &b in seg { freq[b as usize] += 1; }
+        for &b in seg {
+            freq[b as usize] += 1;
+        }
 
         let seg_n = seg.len() as f64;
         let mut fv = Vec::with_capacity(258);
@@ -2344,15 +2269,26 @@ pub fn segment_clustering_test(stream: &BitByteStream) -> f64 {
         }
 
         fv.push(byte_entropy(seg));
-        fv.push(lz76_complexity_bytes(seg));
+        fv.push(lz76_complexity_bytes_sam(seg));
+
         features.push(fv);
     }
 
+    // K-means with 2 clusters
     let mut c1 = features[0].clone();
     let mut c2 = features[k - 1].clone();
     let mut assign = vec![0usize; k];
 
-    for _iter in 0..5 {
+    // Iteration count depends on k
+    let iters = match k {
+        8 => 5,
+        12 => 6,
+        16 => 8,
+        24 => 10,
+        _ => 12,
+    };
+
+    for _ in 0..iters {
         for i in 0..k {
             let d1 = euclidean_distance(&features[i], &c1);
             let d2 = euclidean_distance(&features[i], &c2);
@@ -2366,93 +2302,40 @@ pub fn segment_clustering_test(stream: &BitByteStream) -> f64 {
             else { cl2.push(&features[i][..]); }
         }
 
-        if cl1.is_empty() || cl2.is_empty() { return 1.0; }
+        if cl1.is_empty() || cl2.is_empty() {
+            return 1.0;
+        }
 
         c1 = compute_centroid(&cl1);
         c2 = compute_centroid(&cl2);
     }
 
+    // Compute separation and compactness
     let separation = euclidean_distance(&c1, &c2);
+
     let mut compactness = 0.0;
     for i in 0..k {
-        let d = if assign[i] == 0 { euclidean_distance(&features[i], &c1) }
-                else { euclidean_distance(&features[i], &c2) };
+        let d = if assign[i] == 0 {
+            euclidean_distance(&features[i], &c1)
+        } else {
+            euclidean_distance(&features[i], &c2)
+        };
         compactness += d * d;
     }
     compactness /= k as f64;
 
     let stat_raw = separation / (compactness.sqrt() + 1e-12);
     let deviation = (stat_raw - 1.0).abs();
-    let stat = deviation * (k as f64).sqrt();
+
+    // Bucket-dependent tightening
+    let scale = [1.0, 1.0, 0.9, 0.8, 0.7, 0.6, 0.5][bucket];
+
+    let stat = deviation * (k as f64).sqrt() * scale;
     let p = 2.0 * (1.0 - normal_cdf(stat));
 
     if p.is_nan() { 0.0 } else { p.clamp(0.0, 1.0) }
 }
 
-pub fn segment_clustering_deep_dive_test(stream: &BitByteStream) -> f64 {
-    let n = stream.byte_len;
-    // Strict Deep Dive Constraint: 10M bit health check needs density
-    if n < 100000 { return 0.0; }
-
-    let k = 32; // Significantly higher resolution
-    let seg_len = n / k;
-    let bytes = &stream.bytes;
-    let mut features: Vec<Vec<f64>> = Vec::with_capacity(k);
-
-    for i in 0..k {
-        let start = i * seg_len;
-        let end = start + seg_len;
-        let seg = &bytes[start..end];
-
-        let mut freq = [0usize; 256];
-        for &b in seg { freq[b as usize] += 1; }
-
-        let mut fv = Vec::with_capacity(258);
-        for &c in freq.iter() { fv.push(c as f64 / seg_len as f64); }
-        fv.push(byte_entropy(seg));
-        fv.push(lz76_complexity_bytes(seg));
-        features.push(fv);
-    }
-
-    // K-means logic for 32 points
-    let mut c1 = features[0].clone();
-    let mut c2 = features[k - 1].clone();
-    let mut assign = vec![0usize; k];
-
-    for _iter in 0..10 { // More iterations for more points
-        for i in 0..k {
-            let d1 = euclidean_distance(&features[i], &c1);
-            let d2 = euclidean_distance(&features[i], &c2);
-            assign[i] = if d1 < d2 { 0 } else { 1 };
-        }
-        let mut cl1 = Vec::new();
-        let mut cl2 = Vec::new();
-        for i in 0..k {
-            if assign[i] == 0 { cl1.push(&features[i][..]); }
-            else { cl2.push(&features[i][..]); }
-        }
-        if cl1.is_empty() || cl2.is_empty() { return 1.0; }
-        c1 = compute_centroid(&cl1);
-        c2 = compute_centroid(&cl2);
-    }
-
-    let separation = euclidean_distance(&c1, &c2);
-    let mut compactness = 0.0;
-    for i in 0..k {
-        let d = if assign[i] == 0 { euclidean_distance(&features[i], &c1) }
-                else { euclidean_distance(&features[i], &c2) };
-        compactness += d * d;
-    }
-    compactness /= k as f64;
-
-    let stat_raw = separation / (compactness.sqrt() + 1e-12);
-    let deviation = (stat_raw - 1.0).abs();
-    // More points means the stat must be tighter
-    let stat = deviation * (k as f64).sqrt() * 0.5; 
-    let p = 2.0 * (1.0 - normal_cdf(stat));
-
-    if p.is_nan() { 0.0 } else { p.clamp(0.0, 1.0) }
-}
 
 // ----------------------------------------------------------------
 // Segment Clustering Audit Wrappers (Thread-Aware)
@@ -2485,76 +2368,76 @@ pub fn segment_clustering_deep_dive_now_and_audit(thread_id: usize, stream: &Bit
 //  Returns: p-value (f64)
 // ================================================================
 
-pub fn wasserstein_drift_test(stream: &BitByteStream) -> f64 {
+pub fn wasserstein_drift_unified_test(stream: &BitByteStream) -> f64 {
     let n = stream.byte_len;
-    if n < 2048 { return 0.0; }
+    if n < 2048 {
+        return 0.0;
+    }
 
-    let k = 8;
+    let bucket = get_sampling_frequency_bucket(n);
+
+    // Adaptive segment count
+    let k = match bucket {
+        0 => 8,
+        1 => 8,
+        2 => 12,
+        3 => 16,
+        4 => 16,
+        5 => 24,
+        _ => 32,
+    };
+
     let seg_len = n / k;
-    if seg_len < 128 { return 0.0; }
+    if seg_len < 128 {
+        return 0.0;
+    }
 
     let bytes = &stream.bytes;
     let mut hists: Vec<[f64; 256]> = Vec::with_capacity(k);
 
+    // Build histograms
     for i in 0..k {
         let start = i * seg_len;
         let end = if i == k - 1 { n } else { start + seg_len };
         hists.push(byte_histogram(&bytes[start..end]));
     }
 
-    let mut distances = Vec::new();
+    // Compute Wasserstein distances between adjacent segments
+    let mut distances = Vec::with_capacity(k - 1);
     for i in 0..(k - 1) {
         distances.push(wasserstein_1(&hists[i], &hists[i + 1]));
     }
 
     let m = distances.len() as f64;
-    if m == 0.0 { return 0.0; }
+    if m == 0.0 {
+        return 0.0;
+    }
 
     let mean = distances.iter().sum::<f64>() / m;
     let var = distances.iter().map(|&d| (d - mean).powi(2)).sum::<f64>() / m;
 
-    // Expected variance for IID random data is extremely low
-    let expected_var = 0.0005;
+    // Expected variance depends on bucket
+    let expected_var = [
+        0.0005,  // bucket 0
+        0.00045, // bucket 1
+        0.00035, // bucket 2
+        0.00025, // bucket 3
+        0.00020, // bucket 4
+        0.00015, // bucket 5
+        0.00010, // bucket 6
+    ][bucket];
+
     let deviation = (var - expected_var).abs();
 
-    let stat = deviation * m.sqrt();
+    // Bucket-dependent scaling
+    let scale = [1.0, 1.0, 1.2, 1.4, 1.6, 1.8, 2.0][bucket];
+
+    let stat = deviation * m.sqrt() * scale;
     let p = 2.0 * (1.0 - normal_cdf(stat));
 
     if p.is_nan() { 0.0 } else { p.clamp(0.0, 1.0) }
 }
 
-pub fn wasserstein_drift_deep_dive_test(stream: &BitByteStream) -> f64 {
-    let n = stream.byte_len;
-    // Deep dive needs higher density per histogram to be meaningful
-    if n < 131072 { return 0.0; } 
-
-    let k = 32; 
-    let seg_len = n / k;
-    let bytes = &stream.bytes;
-    let mut hists: Vec<[f64; 256]> = Vec::with_capacity(k);
-
-    for i in 0..k {
-        let start = i * seg_len;
-        let end = start + seg_len;
-        hists.push(byte_histogram(&bytes[start..end]));
-    }
-
-    let mut distances = Vec::new();
-    for i in 0..(k - 1) {
-        distances.push(wasserstein_1(&hists[i], &hists[i + 1]));
-    }
-
-    let m = distances.len() as f64;
-    let mean = distances.iter().sum::<f64>() / m;
-    let var = distances.iter().map(|&d| (d - mean).powi(2)).sum::<f64>() / m;
-
-    // At 32 segments, the expected variance is even tighter
-    let expected_var = 0.0001; 
-    let stat = (var - expected_var).abs() * m.sqrt() * 2.0;
-    let p = 2.0 * (1.0 - normal_cdf(stat));
-
-    if p.is_nan() { 0.0 } else { p.clamp(0.0, 1.0) }
-}
 
 // ----------------------------------------------------------------
 // Wasserstein Drift Audit Wrappers (Thread-Aware)
@@ -2587,96 +2470,74 @@ pub fn wasserstein_drift_deep_dive_now_and_audit(thread_id: usize, stream: &BitB
 //  Returns: p-value (f64)
 // ================================================================
 
-pub fn martingale_betting_test(stream: &BitByteStream) -> f64 {
+pub fn martingale_betting_unified_test(stream: &BitByteStream) -> f64 {
     let bits = &stream.bits;
     let n = bits.len();
-    
-    // Strict requirement: Fail if data is insufficient for a betting series
-    if n < 500 { return 0.0; }
-
-    let f = 0.1; // Betting fraction
-    let mut w_const_1 = 1.0;
-    let mut w_const_0 = 1.0;
-    let mut w_bias_follow = 1.0;
-    let mut w_repeat_prev = 1.0;
-
-    let mut count_1 = 0usize;
-    let mut count_0 = 0usize;
-    let mut prev_bit = bits[0];
-
-    for &b in bits {
-        if b == 1 { count_1 += 1; } else { count_0 += 1; }
-
-        // Strategy 1 & 2: Static Bias
-        if b == 1 { w_const_1 *= 1.0 + f; w_const_0 *= 1.0 - f; }
-        else      { w_const_1 *= 1.0 - f; w_const_0 *= 1.0 + f; }
-
-        // Strategy 3: Dynamic Bias (Follow the trend)
-        let pred_bias = if count_1 >= count_0 { 1u8 } else { 0u8 };
-        if b == pred_bias { w_bias_follow *= 1.0 + f; }
-        else             { w_bias_follow *= 1.0 - f; }
-
-        // Strategy 4: Local Persistence (Repeat previous)
-        if b == prev_bit { w_repeat_prev *= 1.0 + f; }
-        else            { w_repeat_prev *= 1.0 - f; }
-
-        prev_bit = b;
+    if n < 500 {
+        return 0.0;
     }
 
-    let w_max = w_const_1.max(w_const_0).max(w_bias_follow).max(w_repeat_prev);
-    if w_max <= 0.0 { return 0.0; }
+    let bucket = get_sampling_frequency_bucket(n);
 
-    let stat_raw = w_max.ln();
-    let deviation = stat_raw.abs();
-    
-    // Stat normalization: For large N, we scale to keep the P-value stable
-    let stat = (deviation / (n as f64).sqrt()) * 5.0; 
-    let p = 2.0 * (1.0 - normal_cdf(stat));
+    // Adaptive betting fraction
+    let f = [0.10, 0.10, 0.08, 0.06, 0.05, 0.05, 0.04][bucket];
 
-    if p.is_nan() { 0.0 } else { p.clamp(0.0, 1.0) }
-}
+    // Strategy count
+    let use_periodicity = bucket >= 3;
+    let strategy_count = if use_periodicity { 5 } else { 4 };
 
-pub fn martingale_betting_deep_dive_test(stream: &BitByteStream) -> f64 {
-    let bits = &stream.bits;
-    let n = bits.len();
-    if n < 10000 { return 0.0; } // Deep dive needs more trials to confirm lag
+    let mut wealths = vec![1.0f64; strategy_count];
 
-    let f = 0.05; // Lower fraction for more stability over long 10M bit runs
-    let mut w_max = 1.0;
-    
-    // Ensemble including original strategies + Periodicity Hunter (Lag 8)
-    let mut wealths = vec![1.0f64; 5];
     let mut count_1 = 0usize;
     let mut count_0 = 0usize;
 
-    for i in 8..n {
+    // Start index: periodicity strategy requires lag 8
+    let start_idx = if use_periodicity { 8 } else { 1 };
+
+    for i in start_idx..n {
         let b = bits[i];
+
         if b == 1 { count_1 += 1; } else { count_0 += 1; }
 
-        // [0,1] Static Bias
+        // Strategy 0: Static bias (bet on 1)
         wealths[0] *= if b == 1 { 1.0 + f } else { 1.0 - f };
+
+        // Strategy 1: Static bias (bet on 0)
         wealths[1] *= if b == 0 { 1.0 + f } else { 1.0 - f };
-        
-        // [2] Dynamic Bias
-        let p2 = if count_1 >= count_0 { 1u8 } else { 0u8 };
-        wealths[2] *= if b == p2 { 1.0 + f } else { 1.0 - f };
 
-        // [3] Markov (Lag 1)
-        wealths[3] *= if b == bits[i-1] { 1.0 + f } else { 1.0 - f };
+        // Strategy 2: Dynamic bias (follow global trend)
+        let pred = if count_1 >= count_0 { 1u8 } else { 0u8 };
+        wealths[2] *= if b == pred { 1.0 + f } else { 1.0 - f };
 
-        // [4] Periodicity (Lag 8) - Targets specific scramble artifacts
-        wealths[4] *= if b == bits[i-8] { 1.0 + f } else { 1.0 - f };
+        // Strategy 3: Local persistence (repeat previous)
+        wealths[3] *= if b == bits[i - 1] { 1.0 + f } else { 1.0 - f };
 
-        // Prevent overflow during 10M bit runs
+        // Strategy 4: Periodicity hunter (lag 8)
+        if use_periodicity {
+            wealths[4] *= if b == bits[i - 8] { 1.0 + f } else { 1.0 - f };
+        }
+
+        // Overflow guard for long runs
         if i % 1000 == 0 {
             for w in wealths.iter_mut() {
-                if *w > 1e150 { *w = 1e150; } 
+                if *w > 1e150 {
+                    *w = 1e150;
+                }
             }
         }
     }
 
-    w_max = wealths.iter().fold(0.0, |a, &b| a.max(b));
-    let stat = (w_max.ln().abs() / (n as f64).sqrt()) * 10.0;
+    let w_max = wealths.iter().fold(0.0, |a, &b| a.max(b));
+    if w_max <= 0.0 {
+        return 0.0;
+    }
+
+    let stat_raw = w_max.ln().abs();
+
+    // Bucket-dependent scaling
+    let scale = [5.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0][bucket];
+
+    let stat = (stat_raw / (n as f64).sqrt()) * scale;
     let p = 2.0 * (1.0 - normal_cdf(stat));
 
     if p.is_nan() { 0.0 } else { p.clamp(0.0, 1.0) }
