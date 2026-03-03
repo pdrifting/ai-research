@@ -677,14 +677,17 @@ pub struct BitByteStream {
 
     // Unified chaos parameters
     pub chaos_c_values: Vec<f64>,
+	pub chaos_scale: f64,
 
     // Unified clustering parameters
-    pub clustering_k: usize,
-    pub clustering_iters: usize,
+    pub cluster_k: usize,
+	pub cluster_iters: usize,
+	pub cluster_scale: f64,
 
     // Unified Wasserstein parameters
     pub wasserstein_k: usize,
     pub wasserstein_expected_var: f64,
+	pub wasserstein_scale: f64,
 
     // Unified permutation entropy parameters
     pub perm_d: usize,
@@ -694,8 +697,19 @@ pub struct BitByteStream {
     pub entropy_mode: EntropyMode,
     pub entropy_segments: usize,
 
+    // Unified sampled entropy
+	pub sampen_m: usize,
+    pub sampen_r_scale: f64,
+    pub sampen_limit: usize,
+    pub sampen_expected: f64,
+
+    // Unified snapshot distance
+    pub snap_k: usize,
+    pub snap_expected_var: f64,
+
     // Unified correlation dimension radii
     pub corr_radii: Vec<f64>,
+	pub corr_scale: f64,
 }
 
 impl BitByteStream {
@@ -757,8 +771,6 @@ impl BitByteStream {
         // --------------------------------
 		let star_scale = [1.0, 1.0, 1.1, 1.2, 1.3, 1.4, 1.5][bucket];
 
-
-
         // --------------------------------
         // Build 3‑D points (byte triplets)
         // --------------------------------
@@ -812,7 +824,7 @@ impl BitByteStream {
         let subsample_size = match bucket {
             0..=2 => 2000,
             3..=4 => 4000,
-            _ => 8000,
+            _     => 8000,
         };
 
         let subsample = subsample_indices(points_len, subsample_size);
@@ -830,6 +842,8 @@ impl BitByteStream {
             _ => 16,
         };
 
+        let chaos_scale = [1.0, 1.2, 1.4, 1.6, 1.8, 2.0, 2.2][bucket];
+
         let chaos_c_values = (0..chaos_count)
             .map(|i| 1.1 + 0.15 * (i as f64))
             .collect::<Vec<_>>();
@@ -837,38 +851,38 @@ impl BitByteStream {
         // --------------------------------
         // Unified clustering parameters
         // --------------------------------
-        let clustering_k = match bucket {
+        let cluster_k = match bucket {
             0 | 1 => 8,
-            2 => 12,
+            2     => 12,
             3 | 4 => 16,
-            5 => 24,
-            _ => 32,
+            5     => 24,
+            _     => 32,
         };
 
-        let clustering_iters = match clustering_k {
-            8 => 5,
+        let cluster_iters = match clustering_k {
+            8  => 5,
             12 => 6,
             16 => 8,
             24 => 10,
-            _ => 12,
+            _  => 12,
         };
+
+        let cluster_scale = [1.0, 1.0, 0.9, 0.8, 0.7, 0.6, 0.5][bucket];
 
         // --------------------------------
         // Unified Wasserstein parameters
         // --------------------------------
         let wasserstein_k = clustering_k;
-
-        let wasserstein_expected_var = [
-            0.0005, 0.00045, 0.00035, 0.00025, 0.00020, 0.00015, 0.00010
-        ][bucket];
+        let wasserstein_expected_var = [0.0005, 0.00045, 0.00035, 0.00025, 0.00020, 0.00015, 0.00010][bucket];
+        let wasserstein_scale = [1.0, 1.0, 1.2, 1.4, 1.6, 1.8, 2.0][bucket];
 
         // --------------------------------------
         // Unified permutation entropy parameters
         // --------------------------------------
         let perm_d = match bucket {
-            0 | 1 => 4,
+            0 | 1     => 4,
             2 | 3 | 4 => 5,
-            _ => 6,
+            _         => 6,
         };
 
         let perm_min_n = match bucket {
@@ -895,6 +909,26 @@ impl BitByteStream {
             4 => 6,
             5 => 8,
             _ => 10,
+        };
+
+        // Unified sample entropy
+		let sampen_m = if bucket <= 2 { 2 } else { 3 };
+
+        let sampen_r_scale = if sampen_m == 2 { 0.20 } else { 0.15 };
+
+        let sampen_limit = match bucket {
+            0 | 1 => byte_len.min(2000),
+            2 => byte_len.min(3000),
+            3 => byte_len.min(4000),
+            4 => byte_len.min(5000),
+            5 => byte_len.min(6000),
+            _ => byte_len.min(8000),
+        };
+
+        let sampen_expected = if sampen_m == 2 {
+            [2.20, 2.18, 2.16, 2.15, 2.14, 2.13, 2.12][bucket]
+        } else {
+            [3.10, 3.08, 3.06, 3.05, 3.04, 3.03, 3.02][bucket]
         };
 
         // -----------------------------
@@ -929,6 +963,8 @@ impl BitByteStream {
             _ => 8,
         };
 
+        let corr_scale = [3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0][bucket];
+
         let r_min = 10.0;
         let r_max = 120.0;
 
@@ -938,6 +974,16 @@ impl BitByteStream {
                 r_min * (r_max / r_min).powf(t)
             })
             .collect::<Vec<_>>();
+
+        let snap_k = match bucket {
+            0 | 1 => 8,
+            2     => 12,
+            3 | 4 => 16,
+            5     => 20,
+            _     => 24,
+        };
+
+        let snap_expected_var = [0.010, 0.009, 0.008, 0.007, 0.006, 0.005, 0.004][bucket];
 
         // -----------------------------
         // Return unified stream
@@ -962,16 +1008,27 @@ impl BitByteStream {
             transition_matrix,
             use_transition_kl,
             kl_scale,
+			star_scale,
             chaos_c_values,
-            clustering_k,
-            clustering_iters,
+			chaos_scale,
+            cluster_k,
+            cluster_iters,
+			cluster_scale,
             wasserstein_k,
             wasserstein_expected_var,
+			wasserstein_scale,
             perm_d,
             perm_min_n,
             entropy_mode,
             entropy_segments,
+			sampen_m,
+            sampen_r_scale,
+            sampen_limit,
+            sampen_expected,
+			snap_k,
+            snap_expected_var,
             corr_radii,
+			corr_scale,
         }
     }
 }
@@ -1307,7 +1364,7 @@ pub fn lz76_complexity_test(stream: &BitByteStream) -> f64 {
 
     if variance <= 0.0 { return 0.0; }
     
-    santize_p(2.0 * (1.0 - normal_cdf(((c_n - expected) / variance.sqrt()).abs())))
+    sanitize_p(2.0 * (1.0 - normal_cdf(((c_n - expected) / variance.sqrt()).abs())))
 }
 
 // ================================================================
@@ -1887,9 +1944,8 @@ pub fn star_discrepancy_unified_test(stream: &BitByteStream) -> f64 {
             }
         }
     }
-
-    let stat = max_diff * m.sqrt() * scale;
-    sanitize_p(1.0 - normal_cdf(stat))
+    
+    sanitize_p(1.0 - normal_cdf(max_diff * m.sqrt() * scale))
 }
 
 // ================================================================
@@ -1897,39 +1953,18 @@ pub fn star_discrepancy_unified_test(stream: &BitByteStream) -> f64 {
 //  Measures intrinsic dimensionality of the attractor
 //  Returns: p-value (f64)
 // ================================================================
-
 pub fn correlation_dimension_unified_test(stream: &BitByteStream) -> f64 {
-    let idx = &stream.subsample_2k;
-    let pts = &stream.points_3d_u8;
+    let idx = &stream.subsample;
+    let pts = &stream.points_3d;
+    let radii = &stream.corr_radii;
+    let scale = stream.corr_scale;
 
     let m = idx.len();
     if m < 10 {
         return 0.0;
     }
 
-    let bucket = get_sampling_frequency_bucket(m);
-
-    // Adaptive number of radii
-    let r_count = match bucket {
-        0 => 3,
-        1 => 4,
-        2 => 5,
-        3 => 6,
-        4 => 6,
-        5 => 7,
-        _ => 8,
-    };
-
-    // Generate radii using geometric spacing
-    let r_min = 10.0;
-    let r_max = 120.0;
-    let mut r_scales = Vec::with_capacity(r_count);
-    for i in 0..r_count {
-        let t = i as f64 / (r_count as f64 - 1.0);
-        let r = r_min * (r_max / r_min).powf(t);
-        r_scales.push(r);
-    }
-
+    let r_count = radii.len();
     let mut counts = vec![0usize; r_count];
 
     // Count pairs within each radius
@@ -1946,7 +1981,7 @@ pub fn correlation_dimension_unified_test(stream: &BitByteStream) -> f64 {
             let dz = z1 - z2_u as f64;
             let d2 = dx * dx + dy * dy + dz * dz;
 
-            for (i, r) in r_scales.iter().enumerate() {
+            for (i, r) in radii.iter().enumerate() {
                 if d2 < r * r {
                     counts[i] += 1;
                 }
@@ -1962,19 +1997,13 @@ pub fn correlation_dimension_unified_test(stream: &BitByteStream) -> f64 {
     // Compute slope = correlation dimension
     let y1 = (counts[0] as f64).ln();
     let y2 = (counts[r_count - 1] as f64).ln();
-    let x1 = r_scales[0].ln();
-    let x2 = r_scales[r_count - 1].ln();
+    let x1 = radii[0].ln();
+    let x2 = radii[r_count - 1].ln();
 
     let d_est = (y2 - y1) / (x2 - x1);
 
     // Expected dimension = 3.0
-    let deviation = (d_est - 3.0).abs();
-
-    // Bucket-dependent scaling
-    let scale = [3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0][bucket];
-
-    let stat = deviation * scale;
-    sanitize_p(2.0 * (1.0 - normal_cdf(stat)))
+    sanitize_p(2.0 * (1.0 - normal_cdf((d_est - 3.0).abs() * scale)))
 }
 
 // ================================================================
@@ -1982,38 +2011,17 @@ pub fn correlation_dimension_unified_test(stream: &BitByteStream) -> f64 {
 //  Measures chaotic vs regular vs random behavior
 //  Returns: p-value (f64)
 // ================================================================
-
 pub fn chaos_01_unified_test(stream: &BitByteStream) -> f64 {
     let n = stream.byte_len;
-    if n < 2000 {
-        return 0.0;
-    }
+    let cs = &stream.chaos_c_values;
+    let scale = stream.chaos_scale;
 
-    let bucket = get_sampling_frequency_bucket(n);
-
-    // Adaptive number of c-values
-    let c_count = match bucket {
-        0 => 4,
-        1 => 6,
-        2 => 8,
-        3 => 10,
-        4 => 12,
-        5 => 14,
-        _ => 16,
-    };
-
-    // Generate c-values programmatically
-    let mut cs = Vec::with_capacity(c_count);
-    for i in 0..c_count {
-        cs.push(1.1 + 0.15 * (i as f64));
-    }
-
-    // Convert bytes to normalized floats
+    // Convert bytes to normalized floats once
     let x: Vec<f64> = stream.bytes.iter().map(|&b| b as f64 / 255.0).collect();
 
-    let mut k_values = Vec::with_capacity(c_count);
+    let mut k_values = Vec::with_capacity(cs.len());
 
-    for &c in &cs {
+    for &c in cs {
         let mut p = 0.0;
         let mut q = 0.0;
 
@@ -2035,11 +2043,8 @@ pub fn chaos_01_unified_test(stream: &BitByteStream) -> f64 {
     k_values.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let k_med = k_values[k_values.len() / 2];
 
-    // Expected K = 1.0, bucket-dependent sensitivity
-    let scale = [1.0, 1.2, 1.4, 1.6, 1.8, 2.0, 2.2][bucket];
-
-    let stat = (k_med - 1.0).abs() * scale;
-    sanitize_p(2.0 * (1.0 - normal_cdf(stat)))
+    // Expected K = 1.0    
+    sanitize_p(2.0 * (1.0 - normal_cdf((k_med - 1.0).abs() * scale)))
 }
 
 // ================================================================
@@ -2047,30 +2052,24 @@ pub fn chaos_01_unified_test(stream: &BitByteStream) -> f64 {
 //  Measures regularity without self-matches
 //  Returns: p-value (f64)
 // ================================================================
-
 pub fn sample_entropy_unified_test(stream: &BitByteStream) -> f64 {
-    let n = stream.byte_len;
+    let n = stream.byte_len;    
+    let m = stream.sampen_m;
+    let r_scale = stream.sampen_r_scale;
+    let limit = stream.sampen_limit;
+    let expected = stream.sampen_expected;
 
-    let x: Vec<f64> = stream.points_3d_f32.iter().map(|p| p.0 as f64).collect();
+    // Use the unified 3D embedding (x component only)
+    let x: Vec<f64> = stream.points_3d.iter().map(|p| p.0 as f64).collect();
+
     let sd = stddev(&x);
     if sd <= 0.0 {
         return 0.0;
     }
 
-    let bucket = get_sampling_frequency_bucket(n);
-    let m = if bucket <= 2 { 2 } else { 3 };
-    let r = if m == 2 { 0.20 * sd } else { 0.15 * sd };
+    let r = r_scale * sd;
 
-    let limit = match bucket {
-        0 => n.min(2000),
-        1 => n.min(2000),
-        2 => n.min(3000),
-        3 => n.min(4000),
-        4 => n.min(5000),
-        5 => n.min(6000),
-        _ => n.min(8000),
-    };
-
+    // Count matches
     let b = count_matches(&x[..limit], m, r);
     let a = count_matches(&x[..limit], m + 1, r);
 
@@ -2079,130 +2078,22 @@ pub fn sample_entropy_unified_test(stream: &BitByteStream) -> f64 {
     }
 
     let sampen = -((a as f64) / (b as f64)).ln();
-    
-    let expected = if m == 2 {
-        [2.20, 2.18, 2.16, 2.15, 2.14, 2.13, 2.12][bucket]
-    } else {
-        [3.10, 3.08, 3.06, 3.05, 3.04, 3.03, 3.02][bucket]
-    };
+    let deviation = (sampen - expected).abs();
 
-    let deviation = (sampen - expected).abs();    
     sanitize_p(2.0 * (1.0 - normal_cdf(deviation * (limit as f64).sqrt())))
 }
 
-pub fn run_tests(thread_id: usize, stream: &BitByteStream) {
-    let bucket = get_sampling_frequency_bucket(&stream.bit_len);
-		
-	// byte frequency test
-	let bfp = meta_test_wrapper(thread_id, "byte_frequency", stream, byte_frequency_test);
-    let bfg: GlobalAuditResult = global_uniformity_audit(thread_id, "byte_frequency", bucket);
 
-    // gini randomness test
-	let grp = meta_test_wrapper(thread_id, "gini_randomness", stream, gini_randomness_test);
-	let grg: GlobalAuditResult = global_uniformity_audit(thread_id, "gini_randomness", bucket);
-
-    // gap test
-	let gtp = meta_test_wrapper(thread_id, "gap_test", stream, gap_test);
-	let gtg: GlobalAuditResult = global_uniformity_audit(thread_id, "gap_test", bucket);
-
-    // turning point test
-	let tpp = meta_test_wrapper(thread_id, "turning_point", stream, turning_point_test);
-	let tpg: GlobalAuditResult = global_uniformity_audit(thread_id, "turning_point", bucket);
-
-    // lz76 complexity test
-	let lzp = meta_test_wrapper(thread_id, "lz76_complexity", stream, lz76_complexity_test);
-	let lzg: GlobalAuditResult = global_uniformity_audit(thread_id, "lz76_complexity", bucket);
-
-    // maurer universal - BYTE test
-	let mbp = meta_test_wrapper(thread_id, "maurer_universal_byte", stream, maurer_universal_byte_test);
-    let mbg: GlobalAuditResult = global_uniformity_audit(thread_id, "maurer_universal_byte", bucket);
-
-    // spectral CSD Test
-	let scp = meta_test_wrapper(thread_id, "spectral_csd", stream, spectral_csd_test);
-	let scg: GlobalAuditResult = global_uniformity_audit(thread_id, "spectral_csd", bucket);
-
-    // NIST cumulative sum tes - split and refactored for efficiency
-	let cfp = meta_test_wrapper(thread_id, "cusum_forward", stream, cusum_forward_test);
-    let cfg: GlobalAuditResult = global_uniformity_audit(thread_id, "cusum_forward", bucket);
-    
-	let crp = meta_test_wrapper(thread_id, "cusum_reverse", stream, cusum_reverse_test);
-	let crg: GlobalAuditResult = global_uniformity_audit(thread_id, "cusum_reverse", bucket);
-	
-	// KL divergence tests
-	let klp = meta_test_wrapper(thread_id, "kl_divergence", stream, kl_divergence_test);
-	let klg: GlobalAuditResult = global_uniformity_audit(thread_id, "kl_divergence", bucket);
-	
-	let kdp = meta_test_wrapper(thread_id, "kl_divergence_deep_dive", stream, kl_divergence_deep_dive_test);
-	let kdg: GlobalAuditResult = global_uniformity_audit(thread_id, "kl_divergence_deep_dive", bucket);
-	
-	// LZ76 segment similarity test
-	let lsp = meta_test_wrapper(thread_id, "lz76_segment_similarity", stream, lz76_segment_similarity_test);
-	let lsg: GlobalAuditResult = global_uniformity_audit(thread_id, "lz76_segment_similarity", bucket);
-	
-	// NCD history test
-	let ncp = meta_test_wrapper(thread_id, "ncd_test", stream, ncd_test);
-	let ncg: GlobalAuditResult = global_uniformity_audit(thread_id, "ncd_test", bucket);
-	
-	// entropy rate stability test
-	let erp = meta_test_wrapper(thread_id, "entropy_rate_stability", stream, entropy_rate_stability_test);
-	let erg: GlobalAuditResult = global_uniformity_audit(thread_id, "entropy_rate_stability", bucket);
-	
-	let edp = meta_test_wrapper(thread_id, "entropy_rate_stability_deep_dive", stream, entropy_rate_stability_deep_dive_test);
-	let edg: GlobalAuditResult = global_uniformity_audit(thread_id, "entropy_rate_stability_deep_dive", bucket);
-	
-	// star discrepancy test
-	let ssp = meta_test_wrapper(thread_id, "star_discrepancy", stream, star_discrepancy_test)
-	let ssg: GlobalAuditResult = global_uniformity_audit(thread_id, "star_discrepancy", bucket);
-	
-	let sdp = meta_test_wrapper(thread_id, "star_discrepancy_deep_dive", stream, star_discrepancy_deep_dive_test)
-	let sdg: GlobalAuditResult = global_uniformity_audit(thread_id, "star_discrepancy_deep_dive", bucket);
-	
-	// correlation dimension tests
-	let ctp = meta_test_wrapper(thread_id, "correlation_dimension", stream, correlation_dimension_test);
-	let ctg: GlobalAuditResult = global_uniformity_audit(thread_id, "correlation_dimension", bucket);
-    
-	let cdp = meta_test_wrapper(thread_id, "correlation_dimension_deep_dive", stream, correlation_dimension_deep_dive_test);		
-	let cdg: GlobalAuditResult = global_uniformity_audit(thread_id, "correlation_dimension_deep_dive", bucket);
-
-    // chaos 01 test
-    let czp = meta_test_wrapper(thread_id, "chaos_01", stream, chaos_01_test);
-	let czg: GlobalAuditResult = global_uniformity_audit(thread_id, "chaos_01", bucket);
-
-	let czdp = meta_test_wrapper(thread_id, "chaos_01_deep_dive", stream, chaos_01_deep_dive_test);
-	let czdg: GlobalAuditResult = global_uniformity_audit(thread_id, "chaos_01_deep_dive", bucket);
-
-    // sample eentropy scaling test
-	let sep = meta_test_wrapper(thread_id, "sample_entropy_scaling", stream, sample_entropy_scaling_test);
-	let seg: GlobalAuditResult = global_uniformity_audit(thread_id, "byte_frequency", bucket);
-
-	
-	// ... carry on through the tests 
-}
 
 // ================================================================
 //  Snapshot Distance Matrix Test
 //  Measures similarity between segments via pairwise distances
 //  Returns: p-value (f64)
 // ================================================================
-
 pub fn snapshot_distance_matrix_unified_test(stream: &BitByteStream) -> f64 {
     let n = stream.byte_len;
-    if n < 1024 {
-        return 0.0;
-    }
-
-    let bucket = get_sampling_frequency_bucket(n);
-
-    // Choose number of segments k based on bucket
-    let k = match bucket {
-        0 => 8,
-        1 => 8,
-        2 => 12,
-        3 => 16,
-        4 => 16,
-        5 => 20,
-        _ => 24,
-    };
+    let k = stream.snap_k;
+    let expected_var = stream.snap_expected_var;
 
     let seg_len = n / k;
     if seg_len < 128 {
@@ -2252,37 +2143,8 @@ pub fn snapshot_distance_matrix_unified_test(stream: &BitByteStream) -> f64 {
 
     let mean = distances.iter().sum::<f64>() / m;
     let var = distances.iter().map(|&d| (d - mean).powi(2)).sum::<f64>() / m;
-
-    // Expected variance depends on bucket
-    let expected_var = [0.010, 0.009, 0.008, 0.007, 0.006, 0.005, 0.004][bucket];
-
-    let stat = (var - expected_var).abs() * m.sqrt();
-    sanitize_p(2.0 * (1.0 - normal_cdf(stat)))
-}
-
-
-// ----------------------------------------------------------------
-// Snapshot Distance Matrix Audit Wrappers (Thread-Aware)
-// ----------------------------------------------------------------
-
-pub fn snapshot_distance_matrix_history(thread_id: usize, stream: &BitByteStream) -> f64 {
-    meta_test_wrapper(thread_id, "snapshot_distance_matrix", stream, snapshot_distance_matrix_test)
-}
-
-pub fn snapshot_distance_matrix_now_and_audit(thread_id: usize, stream: &BitByteStream) -> (f64, GlobalAuditResult) {
-    let p_now = snapshot_distance_matrix_test(stream);
-    meta_history_push(thread_id, "snapshot_distance_matrix", p_now);
-    (p_now, global_uniformity_audit("snapshot_distance_matrix"))
-}
-
-pub fn snapshot_distance_matrix_deep_dive_history(thread_id: usize, stream: &BitByteStream) -> f64 {
-    meta_test_wrapper(thread_id, "snapshot_distance_matrix_deep_dive", stream, snapshot_distance_matrix_deep_dive_test)
-}
-
-pub fn snapshot_distance_matrix_deep_dive_now_and_audit(thread_id: usize, stream: &BitByteStream) -> (f64, GlobalAuditResult) {
-    let p_now = snapshot_distance_matrix_deep_dive_test(stream);
-    meta_history_push(thread_id, "snapshot_distance_matrix_deep_dive", p_now);
-    (p_now, global_uniformity_audit("snapshot_distance_matrix_deep_dive"))
+    
+    sanitize_p(2.0 * (1.0 - normal_cdf((var - expected_var).abs() * m.sqrt())))
 }
 
 // ================================================================
@@ -2290,22 +2152,11 @@ pub fn snapshot_distance_matrix_deep_dive_now_and_audit(thread_id: usize, stream
 //  Detects phase transitions via cluster separation
 //  Returns: p-value (f64)
 // ================================================================
-
 pub fn segment_clustering_scaling_test(stream: &BitByteStream) -> f64 {
     let n = stream.byte_len;
-
-    let bucket = get_sampling_frequency_bucket(n);
-
-    // Adaptive segment count
-    let k = match bucket {
-        0 => 8,
-        1 => 8,
-        2 => 12,
-        3 => 16,
-        4 => 16,
-        5 => 24,
-        _ => 32,
-    };
+    let k = stream.cluster_k;
+    let iters = stream.cluster_iters;
+    let scale = stream.cluster_scale;
 
     let seg_len = n / k;
     if seg_len < 128 {
@@ -2328,6 +2179,7 @@ pub fn segment_clustering_scaling_test(stream: &BitByteStream) -> f64 {
 
         let seg_n = seg.len() as f64;
         let mut fv = Vec::with_capacity(258);
+
         for &c in freq.iter() {
             fv.push(c as f64 / seg_n);
         }
@@ -2343,15 +2195,6 @@ pub fn segment_clustering_scaling_test(stream: &BitByteStream) -> f64 {
     let mut c2 = features[k - 1].clone();
     let mut assign = vec![0usize; k];
 
-    // Iteration count depends on k
-    let iters = match k {
-        8 => 5,
-        12 => 6,
-        16 => 8,
-        24 => 10,
-        _ => 12,
-    };
-
     for _ in 0..iters {
         for i in 0..k {
             let d1 = euclidean_distance(&features[i], &c1);
@@ -2361,9 +2204,13 @@ pub fn segment_clustering_scaling_test(stream: &BitByteStream) -> f64 {
 
         let mut cl1 = Vec::new();
         let mut cl2 = Vec::new();
+
         for i in 0..k {
-            if assign[i] == 0 { cl1.push(&features[i][..]); }
-            else { cl2.push(&features[i][..]); }
+            if assign[i] == 0 {
+                cl1.push(&features[i][..]);
+            } else {
+                cl2.push(&features[i][..]);
+            }
         }
 
         if cl1.is_empty() || cl2.is_empty() {
@@ -2391,65 +2238,20 @@ pub fn segment_clustering_scaling_test(stream: &BitByteStream) -> f64 {
     let stat_raw = separation / (compactness.sqrt() + 1e-12);
     let deviation = (stat_raw - 1.0).abs();
 
-    // Bucket-dependent tightening
-    let scale = [1.0, 1.0, 0.9, 0.8, 0.7, 0.6, 0.5][bucket];
-
     let stat = deviation * (k as f64).sqrt() * scale;
-    let p = 2.0 * (1.0 - normal_cdf(stat));
-
-    if p.is_nan() { 0.0 } else { p.clamp(0.0, 1.0) }
+    sanitize_p(2.0 * (1.0 - normal_cdf(stat)))
 }
-
-
-// ----------------------------------------------------------------
-// Segment Clustering Audit Wrappers (Thread-Aware)
-// ----------------------------------------------------------------
-
-pub fn segment_clustering_history(thread_id: usize, stream: &BitByteStream) -> f64 {
-    meta_test_wrapper(thread_id, "segment_clustering", stream, segment_clustering_test)
-}
-
-pub fn segment_clustering_now_and_audit(thread_id: usize, stream: &BitByteStream) -> (f64, GlobalAuditResult) {
-    let p_now = segment_clustering_test(stream);
-    meta_history_push(thread_id, "segment_clustering", p_now);
-    (p_now, global_uniformity_audit("segment_clustering"))
-}
-
-pub fn segment_clustering_deep_dive_history(thread_id: usize, stream: &BitByteStream) -> f64 {
-    meta_test_wrapper(thread_id, "segment_clustering_deep_dive", stream, segment_clustering_deep_dive_test)
-}
-
-pub fn segment_clustering_deep_dive_now_and_audit(thread_id: usize, stream: &BitByteStream) -> (f64, GlobalAuditResult) {
-    let p_now = segment_clustering_deep_dive_test(stream);
-    meta_history_push(thread_id, "segment_clustering_deep_dive", p_now);
-    (p_now, global_uniformity_audit("segment_clustering_deep_dive"))
-}
-
 
 // ================================================================
 //  Wasserstein Drift Test (W₁ distance between adjacent segments)
 //  Detects distribution shift between windows
 //  Returns: p-value (f64)
 // ================================================================
-
 pub fn wasserstein_drift_unified_test(stream: &BitByteStream) -> f64 {
     let n = stream.byte_len;
-    if n < 2048 {
-        return 0.0;
-    }
-
-    let bucket = get_sampling_frequency_bucket(n);
-
-    // Adaptive segment count
-    let k = match bucket {
-        0 => 8,
-        1 => 8,
-        2 => 12,
-        3 => 16,
-        4 => 16,
-        5 => 24,
-        _ => 32,
-    };
+    let k = stream.wasserstein_k;
+    let expected_var = stream.wasserstein_expected_var;
+    let scale = stream.wasserstein_scale;
 
     let seg_len = n / k;
     if seg_len < 128 {
@@ -2480,28 +2282,11 @@ pub fn wasserstein_drift_unified_test(stream: &BitByteStream) -> f64 {
     let mean = distances.iter().sum::<f64>() / m;
     let var = distances.iter().map(|&d| (d - mean).powi(2)).sum::<f64>() / m;
 
-    // Expected variance depends on bucket
-    let expected_var = [
-        0.0005,  // bucket 0
-        0.00045, // bucket 1
-        0.00035, // bucket 2
-        0.00025, // bucket 3
-        0.00020, // bucket 4
-        0.00015, // bucket 5
-        0.00010, // bucket 6
-    ][bucket];
-
     let deviation = (var - expected_var).abs();
-
-    // Bucket-dependent scaling
-    let scale = [1.0, 1.0, 1.2, 1.4, 1.6, 1.8, 2.0][bucket];
-
-    let stat = deviation * m.sqrt() * scale;
-    let p = 2.0 * (1.0 - normal_cdf(stat));
-
-    if p.is_nan() { 0.0 } else { p.clamp(0.0, 1.0) }
+    let stat = deviation * m.sqrt() * scale;    
+    
+	sanitize_p(2.0 * (1.0 - normal_cdf(stat)))    
 }
-
 
 // ----------------------------------------------------------------
 // Wasserstein Drift Audit Wrappers (Thread-Aware)
