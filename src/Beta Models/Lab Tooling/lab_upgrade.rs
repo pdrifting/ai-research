@@ -710,6 +710,13 @@ pub struct BitByteStream {
     // Unified correlation dimension radii
     pub corr_radii: Vec<f64>,
 	pub corr_scale: f64,
+	
+	// Unified martingale betting test
+    pub martingale_f: f64,
+    pub martingale_use_periodicity: bool,
+    pub martingale_strategy_count: usize,
+    pub martingale_start_idx: usize,
+    pub martingale_scale: f64,	
 }
 
 impl BitByteStream {
@@ -983,7 +990,15 @@ impl BitByteStream {
             _     => 24,
         };
 
+        // -----------------------------------
+		// Unified martingale test
+		// -----------------------------------
         let snap_expected_var = [0.010, 0.009, 0.008, 0.007, 0.006, 0.005, 0.004][bucket];
+        let martingale_f = [0.10, 0.10, 0.08, 0.06, 0.05, 0.05, 0.04][bucket];
+        let martingale_use_periodicity = bucket >= 3;
+        let martingale_strategy_count = if martingale_use_periodicity { 5 } else { 4 };
+        let martingale_start_idx = if martingale_use_periodicity { 8 } else { 1 };
+        let martingale_scale = [5.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0][bucket];
 
         // -----------------------------
         // Return unified stream
@@ -1029,6 +1044,11 @@ impl BitByteStream {
             snap_expected_var,
             corr_radii,
 			corr_scale,
+			martingale_f,
+            martingale_use_periodicity,
+            martingale_strategy_count,
+            martingale_start_idx,
+            martingale_scale,	
         }
     }
 }
@@ -1312,7 +1332,7 @@ pub fn turning_point_test(stream: &BitByteStream) -> f64 {
 
     let z = (t_f - expected) / variance.sqrt();
     
-	santize_p(2.0 * (1.0 - normal_cdf(z.abs())));
+	sanitize_p(2.0 * (1.0 - normal_cdf(z.abs())));
 }
 
 // ================================================================
@@ -2283,33 +2303,7 @@ pub fn wasserstein_drift_unified_test(stream: &BitByteStream) -> f64 {
     let var = distances.iter().map(|&d| (d - mean).powi(2)).sum::<f64>() / m;
 
     let deviation = (var - expected_var).abs();
-    let stat = deviation * m.sqrt() * scale;    
-    
-	sanitize_p(2.0 * (1.0 - normal_cdf(stat)))    
-}
-
-// ----------------------------------------------------------------
-// Wasserstein Drift Audit Wrappers (Thread-Aware)
-// ----------------------------------------------------------------
-
-pub fn wasserstein_drift_history(thread_id: usize, stream: &BitByteStream) -> f64 {
-    meta_test_wrapper(thread_id, "wasserstein_drift", stream, wasserstein_drift_test)
-}
-
-pub fn wasserstein_drift_now_and_audit(thread_id: usize, stream: &BitByteStream) -> (f64, GlobalAuditResult) {
-    let p_now = wasserstein_drift_test(stream);
-    meta_history_push(thread_id, "wasserstein_drift", p_now);
-    (p_now, global_uniformity_audit("wasserstein_drift"))
-}
-
-pub fn wasserstein_drift_deep_dive_history(thread_id: usize, stream: &BitByteStream) -> f64 {
-    meta_test_wrapper(thread_id, "wasserstein_drift_deep_dive", stream, wasserstein_drift_deep_dive_test)
-}
-
-pub fn wasserstein_drift_deep_dive_now_and_audit(thread_id: usize, stream: &BitByteStream) -> (f64, GlobalAuditResult) {
-    let p_now = wasserstein_drift_deep_dive_test(stream);
-    meta_history_push(thread_id, "wasserstein_drift_deep_dive", p_now);
-    (p_now, global_uniformity_audit("wasserstein_drift_deep_dive"))
+    sanitize_p(2.0 * (1.0 - normal_cdf(deviation * m.sqrt() * scale)))    
 }
 
 // ================================================================
@@ -2318,30 +2312,19 @@ pub fn wasserstein_drift_deep_dive_now_and_audit(thread_id: usize, stream: &BitB
 //  Uses stream.bits directly
 //  Returns: p-value (f64)
 // ================================================================
-
 pub fn martingale_betting_unified_test(stream: &BitByteStream) -> f64 {
     let bits = &stream.bits;
     let n = bits.len();
-    if n < 500 {
-        return 0.0;
-    }
-
-    let bucket = get_sampling_frequency_bucket(n);
-
-    // Adaptive betting fraction
-    let f = [0.10, 0.10, 0.08, 0.06, 0.05, 0.05, 0.04][bucket];
-
-    // Strategy count
-    let use_periodicity = bucket >= 3;
-    let strategy_count = if use_periodicity { 5 } else { 4 };
+    let f = stream.martingale_f;
+    let use_periodicity = stream.martingale_use_periodicity;
+    let strategy_count = stream.martingale_strategy_count;
+    let start_idx = stream.martingale_start_idx;
+    let scale = stream.martingale_scale;
 
     let mut wealths = vec![1.0f64; strategy_count];
 
     let mut count_1 = 0usize;
     let mut count_0 = 0usize;
-
-    // Start index: periodicity strategy requires lag 8
-    let start_idx = if use_periodicity { 8 } else { 1 };
 
     for i in start_idx..n {
         let b = bits[i];
@@ -2349,24 +2332,21 @@ pub fn martingale_betting_unified_test(stream: &BitByteStream) -> f64 {
         if b == 1 { count_1 += 1; } else { count_0 += 1; }
 
         // Strategy 0: Static bias (bet on 1)
-        wealths[0] *= if b == 1 { 1.0 + f } else { 1.0 - f };
-
-        // Strategy 1: Static bias (bet on 0)
-        wealths[1] *= if b == 0 { 1.0 + f } else { 1.0 - f };
-
+		// Strategy 1: Static bias (bet on 0)
         // Strategy 2: Dynamic bias (follow global trend)
-        let pred = if count_1 >= count_0 { 1u8 } else { 0u8 };
-        wealths[2] *= if b == pred { 1.0 + f } else { 1.0 - f };
-
-        // Strategy 3: Local persistence (repeat previous)
+		// Strategy 3: Local persistence (repeat previous)
+		// Strategy 4: Periodicity hunter (lag 8)
+		let pred = if count_1 >= count_0 { 1u8 } else { 0u8 };
+		
+		wealths[0] *= if b == 1 { 1.0 + f } else { 1.0 - f };       
+        wealths[1] *= if b == 0 { 1.0 + f } else { 1.0 - f };        
+        wealths[2] *= if b == pred { 1.0 + f } else { 1.0 - f };       
         wealths[3] *= if b == bits[i - 1] { 1.0 + f } else { 1.0 - f };
-
-        // Strategy 4: Periodicity hunter (lag 8)
         if use_periodicity {
             wealths[4] *= if b == bits[i - 8] { 1.0 + f } else { 1.0 - f };
         }
 
-        // Overflow guard for long runs
+        // Overflow guard
         if i % 1000 == 0 {
             for w in wealths.iter_mut() {
                 if *w > 1e150 {
@@ -2382,14 +2362,9 @@ pub fn martingale_betting_unified_test(stream: &BitByteStream) -> f64 {
     }
 
     let stat_raw = w_max.ln().abs();
-
-    // Bucket-dependent scaling
-    let scale = [5.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0][bucket];
-
     let stat = (stat_raw / (n as f64).sqrt()) * scale;
-    let p = 2.0 * (1.0 - normal_cdf(stat));
-
-    if p.is_nan() { 0.0 } else { p.clamp(0.0, 1.0) }
+    
+	sanitize_p(2.0 * (1.0 - normal_cdf(stat)))    
 }
 
 // ----------------------------------------------------------------
