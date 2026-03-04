@@ -1,0 +1,18 @@
+[package]
+name = "Lab_Tooling"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+lazy_static = "1.5.0"
+sha2 = "0.10"
+rand = "0.8"
+rand_chacha = "0.3"
+once_cell = "1.19"
+chrono = "0.4"
+rayon = "1.10"
+serde = { version = "1.0", features = ["derive"] }
+bincode = "1.3"
+statrs = "0.16"
+rustfft = "6.2"
+thiserror = "1.0"
