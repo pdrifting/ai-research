@@ -716,24 +716,38 @@ pub struct BitByteStream {
     pub martingale_use_periodicity: bool,
     pub martingale_strategy_count: usize,
     pub martingale_start_idx: usize,
-    pub martingale_scale: f64,	
+    pub martingale_scale: f64,
+	
+	// Unified SPRT drift test
+	pub sprt_use_windows: bool, 
+	pub sprt_window_size: usize,
+	pub sprt_step: usize,
+	pub sprt_scale: f64,
+	
+	// permutation entropy test
+	pub perm_d: usize,
+    pub perm_min_n: usize,
+    pub perm_expected: f64,
+    pub perm_scale: f64,
 }
 
 impl BitByteStream {
+    pub fn new_from_bytes(bytes: Vec<u8>) -> Self {
+        let mut bits = Vec::with_capacity(bytes.len() * 8);
+
+        for &b in &bytes {
+            for i in (0..8).rev() {
+                bits.push((b >> i) & 1);
+            }
+        }
+
+        Self::initialize(bits, bytes)
+    }
+
     pub fn new_from_bits(bits: Vec<u8>) -> Self {
         let bit_len = bits.len();
 
-        // --------------------------------
-        // Bit histogram
-        // --------------------------------
-        let mut bit_hist = [0usize; 2];
-        for &b in &bits {
-            bit_hist[b as usize] += 1;
-        }
-
-        // --------------------------------
         // Convert bits → bytes
-        // --------------------------------
         let mut bytes = Vec::with_capacity(bit_len / 8);
         for chunk in bits.chunks(8) {
             let mut byte = 0u8;
@@ -743,7 +757,20 @@ impl BitByteStream {
             bytes.push(byte);
         }
 
+        Self::initialize(bits, bytes)
+    }
+     
+    fn initialize(bits: Vec<u8>, bytes: Vec<u8>) -> Self {
+        let bit_len = bits.len();
         let byte_len = bytes.len();
+
+        // --------------------------------
+        // Bit histogram
+        // --------------------------------
+        let mut bit_hist = [0usize; 2];
+        for &b in &bits {
+            bit_hist[b as usize] += 1;
+        }
 
         // --------------------------------
         // Byte histogram
@@ -771,7 +798,7 @@ impl BitByteStream {
         // --------------------------------
         // Determine bucket once
         // --------------------------------
-        let bucket = get_sampling_frequency_bucket(byte_len);
+        let bucket = get_sampling_frequency_bucket(bit_len);
 
         // --------------------------------
         // Star Discrepancy scale factor
@@ -866,7 +893,7 @@ impl BitByteStream {
             _     => 32,
         };
 
-        let cluster_iters = match clustering_k {
+        let cluster_iters = match cluster_k {
             8  => 5,
             12 => 6,
             16 => 8,
@@ -879,7 +906,7 @@ impl BitByteStream {
         // --------------------------------
         // Unified Wasserstein parameters
         // --------------------------------
-        let wasserstein_k = clustering_k;
+        let wasserstein_k = cluster_k;
         let wasserstein_expected_var = [0.0005, 0.00045, 0.00035, 0.00025, 0.00020, 0.00015, 0.00010][bucket];
         let wasserstein_scale = [1.0, 1.0, 1.2, 1.4, 1.6, 1.8, 2.0][bucket];
 
@@ -918,7 +945,9 @@ impl BitByteStream {
             _ => 10,
         };
 
+        // --------------------------------
         // Unified sample entropy
+		// --------------------------------
 		let sampen_m = if bucket <= 2 { 2 } else { 3 };
 
         let sampen_r_scale = if sampen_m == 2 { 0.20 } else { 0.15 };
@@ -1000,6 +1029,46 @@ impl BitByteStream {
         let martingale_start_idx = if martingale_use_periodicity { 8 } else { 1 };
         let martingale_scale = [5.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0][bucket];
 
+        // -----------------------------------
+		// Unified SPRT drift test
+		// -----------------------------------
+        let (sprt_use_windows, sprt_window_size, sprt_step, sprt_scale) = match bucket {
+            0 => (false, n, 0, 1.0),
+            1 => (false, n, 0, 1.0),
+            2 => (true, 5000, 2500, 1.2),
+            3 => (true, 10000, 5000, 1.4),
+            4 => (true, 10000, 5000, 1.6),
+            5 => (true, 20000, 10000, 1.8),
+            _ => (true, 20000, 10000, 2.0),
+        };
+
+        // -----------------------------------
+		// Unified permutation entropy test
+		// -----------------------------------
+        let perm_d = match bucket {
+            0 | 1     => 4,
+            2 | 3 | 4 => 5,
+            _         => 6,
+        };
+
+        let perm_min_n = match bucket {
+            0 => 10_000,
+            1 => 20_000,
+            2 => 50_000,
+            3 => 100_000,
+            4 => 200_000,
+            5 => 500_000,
+            _ => 1_000_000,
+        };
+
+        let perm_expected = match perm_d {
+            4 => 0.99,
+            5 => 0.995,
+            _ => 0.997,
+        };
+
+        let perm_scale = [5.0, 6.0, 8.0, 10.0, 12.0, 14.0, 16.0][bucket];
+
         // -----------------------------
         // Return unified stream
         // -----------------------------
@@ -1048,7 +1117,15 @@ impl BitByteStream {
             martingale_use_periodicity,
             martingale_strategy_count,
             martingale_start_idx,
-            martingale_scale,	
+            martingale_scale,
+	        sprt_use_windows, 
+	        sprt_window_size,
+	        sprt_step,
+	        sprt_scale,
+            perm_d,
+            perm_min_n,
+            perm_expected,
+            perm_scale,
         }
     }
 }
@@ -1202,6 +1279,150 @@ pub fn global_uniformity_audit(
         p_min,
         p_max,
         total_samples: count,
+    }
+}
+
+//------------------------------------------------------------------------------------
+
+pub struct ExcursionTracker {
+    pub state_p: Vec<Option<f64>>,   // per-state p-values
+    pub base_p: Option<f64>,         // NIST canonical p-value (min valid p)
+    pub na_count: usize,             // number of None entries
+    pub valid_count: usize,          // number of Some(p)
+}
+
+pub struct ExcursionAuditResult {
+    pub base_p: Option<f64>,      // NIST canonical p-value
+    pub p_min: Option<f64>,       // min valid p across states
+    pub p_max: Option<f64>,       // max valid p across states
+    pub total_states: usize,      // number of states (8 or 18)
+    pub valid_states: usize,      // number of Some(p)
+    pub na_states: usize,         // number of None
+}
+
+lazy_static! {
+    static ref EXCURSION_REGISTRY: Mutex<HashMap<(usize, String, usize), Vec<Option<f64>>>> 
+        = Mutex::new(HashMap::new());
+}
+
+pub fn excursion_history_push(
+    thread_id: usize,
+    test_name: &str,
+    p_vec: Vec<Option<f64>>,
+    n: usize,
+) {
+    let mut reg = EXCURSION_REGISTRY.lock().unwrap();
+    let bucket = get_sampling_frequency_bucket(n);
+    let key = (thread_id, test_name.to_string(), bucket);
+
+    reg.insert(key, p_vec);
+}
+
+pub fn meta_history_push_na(thread_id: usize, test_name: &str) {
+    let mut reg = REGISTRY.lock().unwrap();
+    let key = (thread_id, test_name.to_string(), 0usize);
+    let history = reg.entry(key).or_insert_with(TestHistory::new);
+
+     // sentinel for NA
+	history.push(42.0);
+}
+
+pub fn excursion_uniformity_audit(
+    thread_id: usize,
+    test_name: &str,
+    bucket: usize,
+) -> ExcursionAuditResult {
+    let vec_opt = {
+        let reg = EXCURSION_REGISTRY.lock().unwrap();
+        reg.get(&(thread_id, test_name.to_string(), bucket)).cloned()
+    };
+
+    let Some(p_vec) = vec_opt else {
+        return ExcursionAuditResult {
+            base_p: None,
+            p_min: None,
+            p_max: None,
+            total_states: 0,
+            valid_states: 0,
+            na_states: 0,
+        };
+    };
+
+    let total_states = p_vec.len();
+    let mut valid_states = 0;
+    let mut na_states = 0;
+
+    let mut p_min = 1.0;
+    let mut p_max = 0.0;
+
+    for p_opt in &p_vec {
+        match p_opt {
+            Some(p) => {
+                valid_states += 1;
+                if *p < p_min { p_min = *p; }
+                if *p > p_max { p_max = *p; }
+            }
+            None => na_states += 1,
+        }
+    }
+
+    let base_p = if valid_states > 0 {
+        Some(p_min)
+    } else {
+        None
+    };
+
+    ExcursionAuditResult {
+        base_p,
+        p_min: if valid_states > 0 { Some(p_min) } else { None },
+        p_max: if valid_states > 0 { Some(p_max) } else { None },
+        total_states,
+        valid_states,
+        na_states,
+    }
+}
+
+pub fn run_excursion_test<F>(
+    thread_id: usize,
+    base_key: &str,
+    stream: &BitByteStream,
+    test_fn: F
+) -> ExcursionTracker
+where
+    F: Fn(&BitByteStream) -> Vec<Option<f64>>,
+{
+    let vec = test_fn(stream);
+
+    let mut na_count = 0usize;
+    let mut valid_count = 0usize;
+
+    for (i, p_opt) in vec.iter().enumerate() {
+        let key = format!("{}_s{}", base_key, i);
+
+        match p_opt {
+            Some(p) => {
+                valid_count += 1;
+                meta_history_push(thread_id, &key, *p, stream.bits.len());
+            }
+            None => {
+                na_count += 1;
+                meta_history_push_na(thread_id, &key);
+            }
+        }
+    }
+
+    let base_p = vec
+        .iter()
+        .filter_map(|x| *x)
+        .fold(None, |acc, p| {
+            Some(acc.map_or(p, |minp| minp.min(p)))
+        });
+
+    ExcursionTracker {
+        state_p: vec,
+        base_p,
+        na_count,
+        valid_count,
     }
 }
 
@@ -2367,67 +2588,31 @@ pub fn martingale_betting_unified_test(stream: &BitByteStream) -> f64 {
 	sanitize_p(2.0 * (1.0 - normal_cdf(stat)))    
 }
 
-// ----------------------------------------------------------------
-// Martingale Betting Audit Wrappers (Thread-Aware)
-// ----------------------------------------------------------------
-
-pub fn martingale_betting_history(thread_id: usize, stream: &BitByteStream) -> f64 {
-    meta_test_wrapper(thread_id, "martingale_betting", stream, martingale_betting_test)
-}
-
-pub fn martingale_betting_now_and_audit(thread_id: usize, stream: &BitByteStream) -> (f64, GlobalAuditResult) {
-    let p_now = martingale_betting_test(stream);
-    meta_history_push(thread_id, "martingale_betting", p_now);
-    (p_now, global_uniformity_audit("martingale_betting"))
-}
-
-pub fn martingale_betting_deep_dive_history(thread_id: usize, stream: &BitByteStream) -> f64 {
-    meta_test_wrapper(thread_id, "martingale_betting_deep_dive", stream, martingale_betting_deep_dive_test)
-}
-
-pub fn martingale_betting_deep_dive_now_and_audit(thread_id: usize, stream: &BitByteStream) -> (f64, GlobalAuditResult) {
-    let p_now = martingale_betting_deep_dive_test(stream);
-    meta_history_push(thread_id, "martingale_betting_deep_dive", p_now);
-    (p_now, global_uniformity_audit("martingale_betting_deep_dive"))
-}
-
 // ================================================================
 //  SPRT Drift Detector
 //  Sequential likelihood ratio test for distribution shift
 //  Returns: p-value (f64)
 // ================================================================
-
 pub fn sprt_drift_unified_test(stream: &BitByteStream) -> f64 {
     let bits = &stream.bits;
     let n = bits.len();
-    if n < 200 {
-        return 0.0;
-    }
+    let use_windows = stream.sprt_use_windows;
+    let window_size = stream.sprt_window_size;
+    let step = stream.sprt_step;
+    let scale = stream.sprt_scale;
 
-    let bucket = get_sampling_frequency_bucket(n);
+    let log_p0 = (0.5f64).ln();
 
-    // Bucket-dependent parameters
-    let (use_windows, window_size, step, scale) = match bucket {
-        0 => (false, n, 0, 1.0),
-        1 => (false, n, 0, 1.0),
-        2 => (true, 5000, 2500, 1.2),
-        3 => (true, 10000, 5000, 1.4),
-        4 => (true, 10000, 5000, 1.6),
-        5 => (true, 20000, 10000, 1.8),
-        _ => (true, 20000, 10000, 2.0),
-    };
-
-    // GLOBAL MODE (small streams)
+    // GLOBAL MODE
     if !use_windows {
         let count_1 = bits.iter().filter(|&&b| b == 1).count();
         let p_hat = (count_1 as f64) / (n as f64);
+
         if p_hat <= 0.0 || p_hat >= 1.0 {
             return 0.0;
         }
 
         let mut llr = 0.0;
-        let log_p0 = (0.5f64).ln();
-
         for &b in bits {
             let p1 = if b == 1 { p_hat } else { 1.0 - p_hat };
             llr += p1.ln() - log_p0;
@@ -2438,13 +2623,12 @@ pub fn sprt_drift_unified_test(stream: &BitByteStream) -> f64 {
         return if p.is_nan() { 0.0 } else { p.clamp(0.0, 1.0) };
     }
 
-    // SLIDING-WINDOW MODE (large streams)
+    // SLIDING-WINDOW MODE
     if n < window_size {
         return 0.0;
     }
 
     let mut max_stat = 0.0;
-    let log_p0 = (0.5f64).ln();
 
     for i in (0..n - window_size).step_by(step) {
         let window = &bits[i..i + window_size];
@@ -2466,33 +2650,8 @@ pub fn sprt_drift_unified_test(stream: &BitByteStream) -> f64 {
             max_stat = stat;
         }
     }
-
-    let p = 2.0 * (1.0 - normal_cdf(max_stat * scale));
-    if p.is_nan() { 0.0 } else { p.clamp(0.0, 1.0) }
-}
-
-// ----------------------------------------------------------------
-// SPRT Drift Audit Wrappers (Thread-Aware)
-// ----------------------------------------------------------------
-
-pub fn sprt_drift_history(thread_id: usize, stream: &BitByteStream) -> f64 {
-    meta_test_wrapper(thread_id, "sprt_drift", stream, sprt_drift_test)
-}
-
-pub fn sprt_drift_now_and_audit(thread_id: usize, stream: &BitByteStream) -> (f64, GlobalAuditResult) {
-    let p_now = sprt_drift_test(stream);
-    meta_history_push(thread_id, "sprt_drift", p_now);
-    (p_now, global_uniformity_audit("sprt_drift"))
-}
-
-pub fn sprt_drift_deep_dive_history(thread_id: usize, stream: &BitByteStream) -> f64 {
-    meta_test_wrapper(thread_id, "sprt_drift_deep_dive", stream, sprt_drift_deep_dive_test)
-}
-
-pub fn sprt_drift_deep_dive_now_and_audit(thread_id: usize, stream: &BitByteStream) -> (f64, GlobalAuditResult) {
-    let p_now = sprt_drift_deep_dive_test(stream);
-    meta_history_push(thread_id, "sprt_drift_deep_dive", p_now);
-    (p_now, global_uniformity_audit("sprt_drift_deep_dive"))
+    
+	sanitize_p(2.0 * (1.0 - normal_cdf(max_stat * scale)))    
 }
 
 // ================================================================
@@ -2500,38 +2659,20 @@ pub fn sprt_drift_deep_dive_now_and_audit(thread_id: usize, stream: &BitByteStre
 //  Performs ordinal pattern analysis
 //  Returns: p-value (f64)
 // ================================================================
-
 pub fn permutation_entropy_unified_test(stream: &BitByteStream) -> f64 {
     let n = stream.byte_len;
     let bytes = &stream.bytes;
+    let d = stream.perm_d;
+    let min_n = stream.perm_min_n;
+    let expected = stream.perm_expected;
+    let scale = stream.perm_scale;
 
-    let bucket = get_sampling_frequency_bucket(n);
-
-    // Adaptive embedding dimension
-    let d = match bucket {
-        0 | 1 => 4,
-        2 | 3 | 4 => 5,
-        _ => 6,
-    };
-
-    // Minimum stream size
-    let min_n = match bucket {
-        0 => 10_000,
-        1 => 20_000,
-        2 => 50_000,
-        3 => 100_000,
-        4 => 200_000,
-        5 => 500_000,
-        _ => 1_000_000,
-    };
     if n < min_n {
         return 0.0;
     }
 
-    // Number of bins = d!
     let bins = (1..=d).product::<usize>() as f64;
 
-    // Count permutations
     use std::collections::HashMap;
     let mut counts: HashMap<Vec<u8>, usize> = HashMap::new();
 
@@ -2548,7 +2689,6 @@ pub fn permutation_entropy_unified_test(stream: &BitByteStream) -> f64 {
 
     let m = (n - d + 1) as f64;
 
-    // Compute permutation entropy
     let mut h = 0.0;
     for &c in counts.values() {
         let p = c as f64 / m;
@@ -2557,73 +2697,30 @@ pub fn permutation_entropy_unified_test(stream: &BitByteStream) -> f64 {
 
     let h_max = bins.ln();
     let h_norm = h / h_max;
-
-    // Expected normalized entropy
-    let expected = match d {
-        4 => 0.99,
-        5 => 0.995,
-        _ => 0.997,
-    };
-
     let deviation = (h_norm - expected).abs();
-
-    // Bucket-dependent scaling
-    let scale = [5.0, 6.0, 8.0, 10.0, 12.0, 14.0, 16.0][bucket];
-
     let stat = deviation * m.sqrt() * scale;
-    let p = 2.0 * (1.0 - normal_cdf(stat));
-
-    if p.is_nan() { 0.0 } else { p.clamp(0.0, 1.0) }
-}
-
-// ----------------------------------------------------------------
-// Permutation Entropy Audit Wrappers (Thread-Aware)
-// ----------------------------------------------------------------
-
-pub fn permutation_entropy_history(thread_id: usize, stream: &BitByteStream) -> f64 {
-    meta_test_wrapper(thread_id, "permutation_entropy", stream, permutation_entropy_test)
-}
-
-pub fn permutation_entropy_now_and_audit(thread_id: usize, stream: &BitByteStream) -> (f64, GlobalAuditResult) {
-    let p_now = permutation_entropy_test(stream);
-    meta_history_push(thread_id, "permutation_entropy", p_now);
-    (p_now, global_uniformity_audit("permutation_entropy"))
-}
-
-pub fn permutation_entropy_deep_dive_history(thread_id: usize, stream: &BitByteStream) -> f64 {
-    meta_test_wrapper(thread_id, "permutation_entropy_deep_dive", stream, permutation_entropy_deep_dive_test)
-}
-
-pub fn permutation_entropy_deep_dive_now_and_audit(thread_id: usize, stream: &BitByteStream) -> (f64, GlobalAuditResult) {
-    let p_now = permutation_entropy_deep_dive_test(stream);
-    meta_history_push(thread_id, "permutation_entropy_deep_dive", p_now);
-    (p_now, global_uniformity_audit("permutation_entropy_deep_dive"))
+	
+    sanitize_p(2.0 * (1.0 - normal_cdf(stat)))    
 }
 
 ------------------------------------------------------------------
 
+// ----------------------------------------------------------------
 // NIST TESTS MODIFIED FOR TEST HARNESS
+// ----------------------------------------------------------------
 
 pub fn calculate_best_m(n: usize) -> usize {
-    if n < 1_000_000 {
-        return 0; // too small for research-grade linear complexity
-    }
-
-    // Base M = 500 for canonical NIST-sized sequences
-    let base_m = 500.0;
-
-    // Smooth scaling for large sequences
-    let scaled = base_m * (n as f64 / 1_000_000.0).sqrt();
-
-    // Clamp to research-grade sensitivity band
+    let base_m = 500.0;    
+    let scaled = base_m * (n as f64 / 1_000_000.0).sqrt();  
     let m = scaled.clamp(500.0, 2000.0);
-
     m.round() as usize
 }
 
+// ----------------------------------------------------------------
+// NIST Frequency
+// ----------------------------------------------------------------
 pub fn nist_frequency_test(stream: &BitByteStream) -> f64 {
-    let n = stream.bits.len();
-    if n < 100 { return 0.0; } // Strict fail
+    let n = stream.bits.len();    
 
     let mut sum: i64 = 0;
     for &b in &stream.bits {
@@ -2631,26 +2728,12 @@ pub fn nist_frequency_test(stream: &BitByteStream) -> f64 {
     }
 
     let s_obs = (sum.abs() as f64) / (n as f64).sqrt();
-    let p = safe_erfc(s_obs / 2.0f64.sqrt());
-
-    if p.is_nan() { 0.0 } else { p.clamp(0.0, 1.0) }
+    sanitize_p(safe_erfc(s_obs / 2.0f64.sqrt()))
 }
 
 // ----------------------------------------------------------------
-// NIST Frequency Audit Wrappers (Thread-Aware)
+// NIST Block Frequency
 // ----------------------------------------------------------------
-
-pub fn nist_frequency_history(thread_id: usize, stream: &BitByteStream) -> f64 {
-    meta_test_wrapper(thread_id, "nist_frequency", stream, nist_frequency_test)
-}
-
-pub fn nist_frequency_now_and_audit(thread_id: usize, stream: &BitByteStream) -> (f64, GlobalAuditResult) {
-    let p_now = nist_frequency_test(stream);
-    meta_history_push(thread_id, "nist_frequency", p_now);
-    (p_now, global_uniformity_audit("nist_frequency"))
-}
-
-
 pub fn nist_block_frequency_test(stream: &BitByteStream) -> f64 {
     let bits = &stream.bits;
     let n = bits.len();
@@ -2677,32 +2760,15 @@ pub fn nist_block_frequency_test(stream: &BitByteStream) -> f64 {
     }
 
     let chi_sq = 4.0 * (m as f64) * sum;
-    let p_value = cephes_igamc((n_blocks as f64) / 2.0, chi_sq / 2.0);
-
-    if p_value.is_nan() { 0.0 } else { p_value.clamp(0.0, 1.0) }
+    sanitize_p(((n_blocks as f64) / 2.0, chi_sq / 2.0))
 }
 
 // ----------------------------------------------------------------
-// NIST Block Frequency Audit Wrappers (Thread-Aware)
+// NIST Runs
 // ----------------------------------------------------------------
-
-pub fn nist_block_frequency_history(thread_id: usize, stream: &BitByteStream) -> f64 {
-    meta_test_wrapper(thread_id, "nist_block_frequency", stream, nist_block_frequency_test)
-}
-
-pub fn nist_block_frequency_now_and_audit(thread_id: usize, stream: &BitByteStream) -> (f64, GlobalAuditResult) {
-    let p_now = nist_block_frequency_test(stream);
-    meta_history_push(thread_id, "nist_block_frequency", p_now);
-    (p_now, global_uniformity_audit("nist_block_frequency"))
-}
-
 pub fn nist_runs_test(stream: &BitByteStream) -> f64 {
     let bits = &stream.bits;
     let n = bits.len();
-    if n < 100 {
-        return 0.0;
-    }
-
     let ones = bits.iter().filter(|&&b| b == 1).count() as f64;
     let pi_obs = ones / n as f64;
     let tau = 2.0 / (n as f64).sqrt();
@@ -2721,31 +2787,15 @@ pub fn nist_runs_test(stream: &BitByteStream) -> f64 {
     let num = v_obs - 2.0 * (n as f64) * pi_obs * (1.0 - pi_obs);
     let den = 2.0 * pi_obs * (1.0 - pi_obs) * (2.0 * n as f64).sqrt();
     
-    let p_value = erfc((num / den).abs());
-
-    if p_value.is_nan() { 0.0 } else { p_value.clamp(0.0, 1.0) }
+    sanitize_p(erfc((num / den).abs()))
 }
 
 // ----------------------------------------------------------------
-// NIST Runs Audit Wrappers (Thread-Aware)
+// NIST Longest Run of Ones
 // ----------------------------------------------------------------
-
-pub fn nist_runs_history(thread_id: usize, stream: &BitByteStream) -> f64 {
-    meta_test_wrapper(thread_id, "nist_runs", stream, nist_runs_test)
-}
-
-pub fn nist_runs_now_and_audit(thread_id: usize, stream: &BitByteStream) -> (f64, GlobalAuditResult) {
-    let p_now = nist_runs_test(stream);
-    meta_history_push(thread_id, "nist_runs", p_now);
-    (p_now, global_uniformity_audit("nist_runs"))
-}
-
 pub fn nist_longest_run_of_ones_test(stream: &BitByteStream) -> f64 {
     let bits = &stream.bits;
     let n = bits.len();
-    if n < 128 {
-        return 0.0;
-    }
 
     let (k, m, v, pi): (usize, usize, [usize; 7], [f64; 7]) = if n < 6272 {
         (3, 8, [1, 2, 3, 4, 0, 0, 0], [0.21484375, 0.3671875, 0.23046875, 0.1875, 0.0, 0.0, 0.0])
@@ -2798,25 +2848,12 @@ pub fn nist_longest_run_of_ones_test(stream: &BitByteStream) -> f64 {
         }
     }
 
-    let p_value = safe_igamc("longest_run_of_ones", (k as f64) / 2.0, chi_sq / 2.0);
-    
-    if p_value.is_nan() { 0.0 } else { p_value.clamp(0.0, 1.0) }
+    sanitize_p(safe_igamc("longest_run_of_ones", (k as f64) / 2.0, chi_sq / 2.0))    
 }
 
 // ----------------------------------------------------------------
-// NIST Longest Run of Ones Audit Wrappers (Thread-Aware)
+// NIST Binary Matrix Rank
 // ----------------------------------------------------------------
-
-pub fn nist_longest_run_of_ones_history(thread_id: usize, stream: &BitByteStream) -> f64 {
-    meta_test_wrapper(thread_id, "nist_longest_run_of_ones", stream, nist_longest_run_of_ones_test)
-}
-
-pub fn nist_longest_run_of_ones_now_and_audit(thread_id: usize, stream: &BitByteStream) -> (f64, GlobalAuditResult) {
-    let p_now = nist_longest_run_of_ones_test(stream);
-    meta_history_push(thread_id, "nist_longest_run_of_ones", p_now);
-    (p_now, global_uniformity_audit("nist_longest_run_of_ones"))
-}
-
 pub fn nist_binary_matrix_rank_test(stream: &BitByteStream) -> f64 {
     let bits = &stream.bits;
     let n = bits.len();
@@ -2861,33 +2898,17 @@ pub fn nist_binary_matrix_rank_test(stream: &BitByteStream) -> f64 {
     let chi_sq = (f32c as f64 - n_f * p32).powi(2) / (n_f * p32)
         + (f31c as f64 - n_f * p31).powi(2) / (n_f * p31)
         + (f30c as f64 - n_f * p30).powi(2) / (n_f * p30);
-
-    let p_value = (-chi_sq / 2.0).exp();
-
-    if p_value.is_nan() { 0.0 } else { p_value.clamp(0.0, 1.0) }
+    
+    sanitize_p((-chi_sq / 2.0).exp())    
 }
+
 
 // ----------------------------------------------------------------
-// NIST Binary Matrix Rank Audit Wrappers (Thread-Aware)
+// NIST Approximate Entropy
 // ----------------------------------------------------------------
-
-pub fn nist_binary_matrix_rank_history(thread_id: usize, stream: &BitByteStream) -> f64 {
-    meta_test_wrapper(thread_id, "nist_binary_matrix_rank", stream, nist_binary_matrix_rank_test)
-}
-
-pub fn nist_binary_matrix_rank_now_and_audit(thread_id: usize, stream: &BitByteStream) -> (f64, GlobalAuditResult) {
-    let p_now = nist_binary_matrix_rank_test(stream);
-    meta_history_push(thread_id, "nist_binary_matrix_rank", p_now);
-    (p_now, global_uniformity_audit("nist_binary_matrix_rank"))
-}
-
 pub fn nist_approximate_entropy_test(stream: &BitByteStream) -> f64 {
     let bits = &stream.bits;
     let n = bits.len();
-    if n < 100 {
-        return 0.0;
-    }
-
     let m = 2usize;
     let seq_length = n;
     let mut ap_en_arr = [0.0_f64; 2];
@@ -2930,28 +2951,14 @@ pub fn nist_approximate_entropy_test(stream: &BitByteStream) -> f64 {
     let df = (1usize << (m - 1)) as f64;
 
     let p_value = safe_igamc("approximate_entropy", df, chi_sq / 2.0);
-
-    if p_value.is_nan() { 0.0 } else { p_value.clamp(0.0, 1.0) }
 }
 
 // ----------------------------------------------------------------
-// NIST Approximate Entropy Audit Wrappers (Thread-Aware)
+// NIST Serial P1 Test
 // ----------------------------------------------------------------
-
-pub fn nist_approximate_entropy_history(thread_id: usize, stream: &BitByteStream) -> f64 {
-    meta_test_wrapper(thread_id, "nist_approx_entropy", stream, nist_approximate_entropy_test)
-}
-
-pub fn nist_approximate_entropy_now_and_audit(thread_id: usize, stream: &BitByteStream) -> (f64, GlobalAuditResult) {
-    let p_now = nist_approximate_entropy_test(stream);
-    meta_history_push(thread_id, "nist_approx_entropy", p_now);
-    (p_now, global_uniformity_audit("nist_approx_entropy"))
-}
-
 pub fn nist_serial_p1_test(stream: &BitByteStream) -> f64 {
     let bits = &stream.bits;
-    let n = bits.len();
-    if n < 1_000_000 { return 0.0; }
+    let n = bits.len();    
     let m = calculate_best_m(n).max(2);
 
     fn psi2(m: i32, n: usize, eps: &[u8]) -> f64 {
@@ -2980,14 +2987,15 @@ pub fn nist_serial_p1_test(stream: &BitByteStream) -> f64 {
     let psim1 = psi2(m_i - 1, n, bits);
     let del1 = psim0 - psim1;
     
-    let p_value = safe_igamc("serial_p1", 2f64.powi(m_i - 1) / 2.0, del1 / 2.0);
-    if p_value.is_nan() { 0.0 } else { p_value.clamp(0.0, 1.0) }
+    sanitize_p(safe_igamc("serial_p1", 2f64.powi(m_i - 1) / 2.0, del1 / 2.0))    
 }
 
+// ----------------------------------------------------------------
+// NIST Serial P2 Test
+// ----------------------------------------------------------------
 pub fn nist_serial_p2_test(stream: &BitByteStream) -> f64 {
     let bits = &stream.bits;
-    let n = bits.len();
-    if n < 1_000_000 { return 0.0; }
+    let n = bits.len();    
     let m = calculate_best_m(n).max(2);
 
     fn psi2(m: i32, n: usize, eps: &[u8]) -> f64 {
@@ -3017,40 +3025,15 @@ pub fn nist_serial_p2_test(stream: &BitByteStream) -> f64 {
     let psim2 = psi2(m_i - 2, n, bits);
     let del2 = psim0 - 2.0 * psim1 + psim2;
     
-    let p_value = safe_igamc("serial_p2", 2f64.powi(m_i - 2) / 2.0, del2 / 2.0);
-    if p_value.is_nan() { 0.0 } else { p_value.clamp(0.0, 1.0) }
+    sanitize_p(safe_igamc("serial_p2", 2f64.powi(m_i - 2) / 2.0, del2 / 2.0))    
 }
 
 // ----------------------------------------------------------------
-// NIST Serial Audit Wrappers (Thread-Aware)
+// NIST DFT Spectral Test
 // ----------------------------------------------------------------
-
-pub fn nist_serial_p1_history(thread_id: usize, stream: &BitByteStream) -> f64 {
-    meta_test_wrapper(thread_id, "nist_serial_p1", stream, nist_serial_p1_test)
-}
-
-pub fn nist_serial_p1_now_and_audit(thread_id: usize, stream: &BitByteStream) -> (f64, GlobalAuditResult) {
-    let p_now = nist_serial_p1_test(stream);
-    meta_history_push(thread_id, "nist_serial_p1", p_now);
-    (p_now, global_uniformity_audit("nist_serial_p1"))
-}
-
-pub fn nist_serial_p2_history(thread_id: usize, stream: &BitByteStream) -> f64 {
-    meta_test_wrapper(thread_id, "nist_serial_p2", stream, nist_serial_p2_test)
-}
-
-pub fn nist_serial_p2_now_and_audit(thread_id: usize, stream: &BitByteStream) -> (f64, GlobalAuditResult) {
-    let p_now = nist_serial_p2_test(stream);
-    meta_history_push(thread_id, "nist_serial_p2", p_now);
-    (p_now, global_uniformity_audit("nist_serial_p2"))
-}
-
 pub fn nist_dft_spectral_test(stream: &BitByteStream) -> f64 {
     let bits = &stream.bits;
     let n = bits.len();
-    if n < 1000 {
-        return 0.0;
-    }
 
     let x: Vec<f64> = bits.iter().map(|&b| if b == 1 { 1.0 } else { -1.0 }).collect();
 
@@ -3071,30 +3054,15 @@ pub fn nist_dft_spectral_test(stream: &BitByteStream) -> f64 {
     let variance = (n as f64) * 0.95 * 0.05 / 4.0;
     let d = (n_l - n_o) / variance.sqrt();
     
-    let p_value = safe_erfc("DFT", d.abs() / 2.0f64.sqrt());
-
-    if p_value.is_nan() { 0.0 } else { p_value.clamp(0.0, 1.0) }
+    sanitize_p(safe_erfc("DFT", d.abs() / 2.0f64.sqrt()))
 }
 
 // ----------------------------------------------------------------
-// NIST DFT Spectral Audit Wrappers (Thread-Aware)
+// NIST Non-Overlapping Template 9 Test
 // ----------------------------------------------------------------
-
-pub fn nist_dft_spectral_history(thread_id: usize, stream: &BitByteStream) -> f64 {
-    meta_test_wrapper(thread_id, "nist_dft_spectral", stream, nist_dft_spectral_test)
-}
-
-pub fn nist_dft_spectral_now_and_audit(thread_id: usize, stream: &BitByteStream) -> (f64, GlobalAuditResult) {
-    let p_now = nist_dft_spectral_test(stream);
-    meta_history_push(thread_id, "nist_dft_spectral", p_now);
-    (p_now, global_uniformity_audit("nist_dft_spectral"))
-}
-
 pub fn nist_non_overlapping_template_9_test(stream: &BitByteStream) -> f64 {
     let bits = &stream.bits;
-    let n = bits.len();
-    if n < 1_000_000 { return 0.0; }
-
+    let n = bits.len();    
     let m = 9;
     let templates = TEMPLATE_9;
     
@@ -3136,14 +3104,15 @@ pub fn nist_non_overlapping_template_9_test(stream: &BitByteStream) -> f64 {
         last_p_value = safe_igamc("non_overlapping_9", (n_blocks as f64) / 2.0, chi_sq / 2.0);
     }
 
-    if last_p_value.is_nan() { 0.0 } else { last_p_value.clamp(0.0, 1.0) }
+    sanitize_p(last_p_value)
 }
 
+// ----------------------------------------------------------------
+// NIST Non-Overlapping Template 10 Test
+// ----------------------------------------------------------------
 pub fn nist_non_overlapping_template_10_test(stream: &BitByteStream) -> f64 {
     let bits = &stream.bits;
-    let n = bits.len();
-    if n < 1_000_000 { return 0.0; }
-
+    let n = bits.len();    
     let m = 10;
     let templates = TEMPLATE_10;
     
@@ -3185,34 +3154,12 @@ pub fn nist_non_overlapping_template_10_test(stream: &BitByteStream) -> f64 {
         last_p_value = safe_igamc("non_overlapping_10", (n_blocks as f64) / 2.0, chi_sq / 2.0);
     }
 
-    if last_p_value.is_nan() { 0.0 } else { last_p_value.clamp(0.0, 1.0) }
+    sanitize_p(last_p_value)
 }
 
 // ----------------------------------------------------------------
-// NIST Non-Overlapping Template Audit Wrappers (Thread-Aware)
+// NIST Overlapping Template Test
 // ----------------------------------------------------------------
-
-pub fn nist_non_overlapping_9_history(thread_id: usize, stream: &BitByteStream) -> f64 {
-    meta_test_wrapper(thread_id, "nist_non_overlap_9", stream, nist_non_overlapping_template_9_test)
-}
-
-pub fn nist_non_overlapping_9_now_and_audit(thread_id: usize, stream: &BitByteStream) -> (f64, GlobalAuditResult) {
-    let p_now = nist_non_overlapping_template_9_test(stream);
-    meta_history_push(thread_id, "nist_non_overlap_9", p_now);
-    (p_now, global_uniformity_audit("nist_non_overlap_9"))
-}
-
-pub fn nist_non_overlapping_10_history(thread_id: usize, stream: &BitByteStream) -> f64 {
-    meta_test_wrapper(thread_id, "nist_non_overlap_10", stream, nist_non_overlapping_template_10_test)
-}
-
-pub fn nist_non_overlapping_10_now_and_audit(thread_id: usize, stream: &BitByteStream) -> (f64, GlobalAuditResult) {
-    let p_now = nist_non_overlapping_template_10_test(stream);
-    meta_history_push(thread_id, "nist_non_overlap_10", p_now);
-    (p_now, global_uniformity_audit("nist_non_overlap_10"))
-}
-
-
 pub fn nist_overlapping_template_test(stream: &BitByteStream) -> f64 {
     let bits = &stream.bits;
     let n = bits.len();
@@ -3270,25 +3217,12 @@ pub fn nist_overlapping_template_test(stream: &BitByteStream) -> f64 {
         }
     }
 
-    let p_value = safe_igamc("overlapping_template", (k_usize as f64) / 2.0, chi2 / 2.0);
-
-    if p_value.is_nan() { 0.0 } else { p_value.clamp(0.0, 1.0) }
+    sanitize_p(safe_igamc("overlapping_template", (k_usize as f64) / 2.0, chi2 / 2.0))
 }
 
 // ----------------------------------------------------------------
-// NIST Overlapping Template Audit Wrappers (Thread-Aware)
+// NIST Universal Maurer Test
 // ----------------------------------------------------------------
-
-pub fn nist_overlapping_template_history(thread_id: usize, stream: &BitByteStream) -> f64 {
-    meta_test_wrapper(thread_id, "nist_overlapping", stream, nist_overlapping_template_test)
-}
-
-pub fn nist_overlapping_template_now_and_audit(thread_id: usize, stream: &BitByteStream) -> (f64, GlobalAuditResult) {
-    let p_now = nist_overlapping_template_test(stream);
-    meta_history_push(thread_id, "nist_overlapping", p_now);
-    (p_now, global_uniformity_audit("nist_overlapping"))
-}
-
 pub fn nist_universal_maurer_test(stream: &BitByteStream) -> f64 {
     let bits = &stream.bits;
     let n = bits.len();
@@ -3348,25 +3282,13 @@ pub fn nist_universal_maurer_test(stream: &BitByteStream) -> f64 {
 
     let phi = sum / k_f;
     let arg = (phi - expected_table[l]).abs() / (sqrt2 * sigma);
-    let p_value = safe_erfc("Maurer", arg);
 
-    if p_value.is_nan() { 0.0 } else { p_value.clamp(0.0, 1.0) }
+    sanitize_p(safe_erfc("Maurer", arg))
 }
 
 // ----------------------------------------------------------------
-// NIST Universal Maurer Audit Wrappers (Thread-Aware)
+// NIST Linear Complexity Test
 // ----------------------------------------------------------------
-
-pub fn nist_universal_maurer_history(thread_id: usize, stream: &BitByteStream) -> f64 {
-    meta_test_wrapper(thread_id, "nist_universal_maurer", stream, nist_universal_maurer_test)
-}
-
-pub fn nist_universal_maurer_now_and_audit(thread_id: usize, stream: &BitByteStream) -> (f64, GlobalAuditResult) {
-    let p_now = nist_universal_maurer_test(stream);
-    meta_history_push(thread_id, "nist_universal_maurer", p_now);
-    (p_now, global_uniformity_audit("nist_universal_maurer"))
-}
-
 pub fn nist_linear_complexity_test(stream: &BitByteStream) -> f64 {
     let bits = &stream.bits;
     let n = bits.len();
@@ -3442,72 +3364,12 @@ pub fn nist_linear_complexity_test(stream: &BitByteStream) -> f64 {
         chi_sq += (nu[i] - expected).powi(2) / expected;
     }
 
-    let p_value = safe_igamc("linear_complexity", (k as f64) / 2.0, chi_sq / 2.0);
-
-    if p_value.is_nan() { 0.0 } else { p_value.clamp(0.0, 1.0) }
+    sanitize_p(safe_igamc("linear_complexity", (k as f64) / 2.0, chi_sq / 2.0))
 }
 
 // ----------------------------------------------------------------
-// NIST Linear Complexity Audit Wrappers
+// NIST Random Excursion Test Validation
 // ----------------------------------------------------------------
-
-pub fn nist_linear_complexity_history(thread_id: usize, stream: &BitByteStream) -> f64 {
-    meta_test_wrapper(thread_id, "nist_linear_complexity", stream, nist_linear_complexity_test)
-}
-
-pub fn nist_linear_complexity_now_and_audit(thread_id: usize, stream: &BitByteStream) -> (f64, GlobalAuditResult) {
-    let p_now = nist_linear_complexity_test(stream);
-    meta_history_push(thread_id, "nist_linear_complexity", p_now);
-    (p_now, global_uniformity_audit("nist_linear_complexity"))
-}
-
-
-
-
-
-
-
-
-
-
-
-// ----------------------------------------------------------------
-// NIST Random Excursions Audit Wrappers (Thread-Aware)
-// ----------------------------------------------------------------
-
-pub fn nist_random_excursions_history(thread_id: usize, stream: &BitByteStream) -> Vec<Option<f64>> {
-    // Note: Since this returns a Vec, we don't use the standard meta_test_wrapper 
-    // which expects a single f64. We call the test directly.
-    let p_values = nist_random_excursions_test(stream);
-    
-    for (i, p_opt) in p_values.iter().enumerate() {
-        if let Some(p) = p_opt {
-            let key = format!("nist_random_excursions_s{}", i);
-            meta_history_push(thread_id, &key, *p);
-        }
-    }
-    p_values
-}
-
-pub fn nist_random_excursions_now_and_audit(thread_id: usize, stream: &BitByteStream) -> (Vec<Option<f64>>, GlobalAuditResult) {
-    let p_now_vec = nist_random_excursions_test(stream);
-    
-    for (i, p_opt) in p_now_vec.iter().enumerate() {
-        if let Some(p) = p_opt {
-            let key = format!("nist_random_excursions_s{}", i);
-            meta_history_push(thread_id, &key, *p);
-        }
-    }
-    
-    // Audits uniformity against the base key
-    (p_now_vec, global_uniformity_audit("nist_random_excursions"))
-}
-
-
-
-
-/// Unified validation for both Random Excursions and Variant tests.
-/// Returns (is_valid)
 fn validate_excursion_eligibility(bits: &[u8], is_variant: bool) -> bool {
     let n = bits.len();
     if n == 0 { return false; }
@@ -3534,23 +3396,22 @@ fn validate_excursion_eligibility(bits: &[u8], is_variant: bool) -> bool {
     j >= constraint
 }
 
+// ----------------------------------------------------------------
+// NIST Random Excursion Test
+// ----------------------------------------------------------------
 pub fn nist_random_excursions_test(stream: &BitByteStream) -> Vec<Option<f64>> {
     let bits = &stream.bits;
     let (is_valid, j, s_k) = validate_excursion_requirements(bits);
-    
-    // If not valid, return 8 "None" values representing N/A for each state
+        
     if !is_valid {
         return vec![None; 8];
     }
 
     let n = bits.len();
     let j_f = j as f64;
-    let mut results = Vec::with_capacity(8);
-
-    // NIST defined states
+    let mut results = Vec::with_capacity(8);    
     let state_x: [i32; 8] = [-4, -3, -2, -1, 1, 2, 3, 4];
-    
-    // Transition probabilities for Random Excursions
+        
     let pi: [[f64; 6]; 5] = [
         [0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // Padding for index 0
         [0.5, 0.25, 0.125, 0.0625, 0.03125, 0.03125], // |x| = 1
@@ -3560,9 +3421,7 @@ pub fn nist_random_excursions_test(stream: &BitByteStream) -> Vec<Option<f64>> {
     ];
 
     let mut nu = [[0f64; 8]; 6];
-    let mut counter = [0usize; 8];
-
-    // Identify excursions (segments between zero-crossings)
+    let mut counter = [0usize; 8];    
     let mut last_zero = 0usize;
     for i in 0..n {
         let val = s_k[i];
@@ -3600,6 +3459,9 @@ pub fn nist_random_excursions_test(stream: &BitByteStream) -> Vec<Option<f64>> {
     results
 }
 
+// ----------------------------------------------------------------
+// NIST Random Excursion Variant Test
+// ----------------------------------------------------------------
 pub fn nist_random_excursions_variant_test(stream: &BitByteStream) -> Vec<Option<f64>> {
     let bits = &stream.bits;
     let (is_valid, j, s_k) = validate_excursion_requirements_variant(bits);
@@ -3609,9 +3471,7 @@ pub fn nist_random_excursions_variant_test(stream: &BitByteStream) -> Vec<Option
     }
 
     let j_f = j as f64;
-    let mut results = Vec::with_capacity(18);
-
-    // Variant states: -9 to -1 and +1 to +9
+    let mut results = Vec::with_capacity(18);    
     let state_x: [i32; 18] = [-9, -8, -7, -6, -5, -4, -3, -2, -1, 1, 2, 3, 4, 5, 6, 7, 8, 9];
 
     for &x_state in &state_x {
@@ -3627,822 +3487,181 @@ pub fn nist_random_excursions_variant_test(stream: &BitByteStream) -> Vec<Option
 }
 
 // ----------------------------------------------------------------
-// NIST Random Excursions Variant Audit Wrappers (Thread-Aware)
+// NIST Random Excursion Variant Test
 // ----------------------------------------------------------------
-
-pub fn nist_random_excursions_variant_history(thread_id: usize, stream: &BitByteStream) -> Vec<Option<f64>> {
-    let p_values = nist_random_excursions_variant_test(stream);
+pub fn run_tests(thread_id: usize, stream: &BitByteStream) -> bool {
+    let n = stream.bit_len;    
+    if n < 1_000_000 {
+        // too small for research-grade linear complexity
+        return false; 
+    }    
     
-    for (i, p_opt) in p_values.iter().enumerate() {
-        if let Some(p) = p_opt {
-            let key = format!("nist_re_variant_s{}", i);
-            meta_history_push(thread_id, &key, *p);
-        }
-    }
-    p_values
-}
+    let bucket = get_sampling_frequency_bucket(n);
+		
+    // byte frequency test
+    let bfp = meta_test_wrapper(thread_id, "byte_frequency", stream, byte_frequency_test);
+    let bfg: GlobalAuditResult = global_uniformity_audit(thread_id, "byte_frequency", bucket);
 
-pub fn nist_random_excursions_variant_now_and_audit(thread_id: usize, stream: &BitByteStream) -> (Vec<Option<f64>>, GlobalAuditResult) {
-    let p_now_vec = nist_random_excursions_variant_test(stream);
+    // gini randomness test
+    let grp = meta_test_wrapper(thread_id, "gini_randomness", stream, gini_randomness_test);
+    let grg: GlobalAuditResult = global_uniformity_audit(thread_id, "gini_randomness", bucket);
+
+    // gap test
+    let gtp = meta_test_wrapper(thread_id, "gap_test", stream, gap_test);
+    let gtg: GlobalAuditResult = global_uniformity_audit(thread_id, "gap_test", bucket);
+
+    // turning point test
+    let tpp = meta_test_wrapper(thread_id, "turning_point", stream, turning_point_test);
+    let tpg: GlobalAuditResult = global_uniformity_audit(thread_id, "turning_point", bucket);
+
+    // lz76 complexity test
+    let lzp = meta_test_wrapper(thread_id, "lz76_complexity", stream, lz76_complexity_test);
+    let lzg: GlobalAuditResult = global_uniformity_audit(thread_id, "lz76_complexity", bucket);
+
+    // maurer universal - BYTE test
+    let mbp = meta_test_wrapper(thread_id, "maurer_universal_byte", stream, maurer_universal_byte_test);
+    let mbg: GlobalAuditResult = global_uniformity_audit(thread_id, "maurer_universal_byte", bucket);
+
+    // spectral CSD Test
+    let scp = meta_test_wrapper(thread_id, "spectral_csd", stream, spectral_csd_test);
+    let scg: GlobalAuditResult = global_uniformity_audit(thread_id, "spectral_csd", bucket);
+
+    // NIST cumulative sum tes - split and refactored for efficiency
+    let cfp = meta_test_wrapper(thread_id, "cusum_forward", stream, cusum_forward_test);
+    let cfg: GlobalAuditResult = global_uniformity_audit(thread_id, "cusum_forward", bucket);
     
-    for (i, p_opt) in p_now_vec.iter().enumerate() {
-        if let Some(p) = p_opt {
-            let key = format!("nist_re_variant_s{}", i);
-            meta_history_push(thread_id, &key, *p);
-        }
-    }
+    let crp = meta_test_wrapper(thread_id, "cusum_reverse", stream, cusum_reverse_test);
+    let crg: GlobalAuditResult = global_uniformity_audit(thread_id, "cusum_reverse", bucket);
+	
+    // KL divergence tests
+    let klp = meta_test_wrapper(thread_id, "kl_divergence", stream, kl_divergence_unified_test);
+    let klg: GlobalAuditResult = global_uniformity_audit(thread_id, "kl_divergence", bucket);
+	
+    // LZ76 segment similarity test
+    let lsp = meta_test_wrapper(thread_id, "lz76_segment_similarity", stream, lz76_segment_similarity_test);
+    let lsg: GlobalAuditResult = global_uniformity_audit(thread_id, "lz76_segment_similarity", bucket);
+	
+    // NCD history test
+    let ncp = meta_test_wrapper(thread_id, "ncd_test", stream, ncd_test);
+    let ncg: GlobalAuditResult = global_uniformity_audit(thread_id, "ncd_test", bucket);
+	
+    // entropy rate stability test
+    let erp = meta_test_wrapper(thread_id, "entropy_rate_stability", stream, entropy_stability_unified_test);
+    let erg: GlobalAuditResult = global_uniformity_audit(thread_id, "entropy_rate_stability", bucket);
+	
+    // star discrepancy test
+    let ssp = meta_test_wrapper(thread_id, "star_discrepancy", stream, star_discrepancy_unified_test)
+    let ssg: GlobalAuditResult = global_uniformity_audit(thread_id, "star_discrepancy", bucket);
+	
+    // correlation dimension tests
+    let ctp = meta_test_wrapper(thread_id, "correlation_dimension", correlation_dimension_unified_test);
+    let ctg: GlobalAuditResult = global_uniformity_audit(thread_id, "correlation_dimension", bucket);
     
-    (p_now_vec, global_uniformity_audit("nist_re_variant"))
+    // chaos 01 test
+    let czp = meta_test_wrapper(thread_id, "chaos_01", stream, chaos_01_unified_test);
+    let czg: GlobalAuditResult = global_uniformity_audit(thread_id, "chaos_01", bucket);
+
+    // sample eentropy scaling test
+    let sep = meta_test_wrapper(thread_id, "sample_entropy", stream, sample_entropy_unified_test);
+    let seg: GlobalAuditResult = global_uniformity_audit(thread_id, "sample_entropy", bucket);
+
+    // snapshot distance matrix test	
+    let sdp = meta_test_wrapper(thread_id, "snapshot_distance", snapshot_distance_matrix_unified_test);
+    let sdg: GlobalAuditResult = global_uniformity_audit(thread_id, "snapshot_distance", bucket);
+
+    // segment clustering test
+    let sap = meta_test_wrapper(thread_id, "segment_clustering", stream, segment_clustering_scaling_test)
+    let sag: GlobalAuditResult = global_uniformity_audit(thread_id, "segment_clustering", bucket);
+
+    // wasserstein drift test
+    let wdp = meta_test_wrapper(thread_id, "wasserstein_drift", stream, wasserstein_drift_unified_test)
+    let wdg: GlobalAuditResult = global_uniformity_audit(thread_id, "wasserstein_drift", bucket);
+
+    // martingale test
+    let mbp = meta_test_wrapper(thread_id, "martingale_betting", stream, martingale_betting_unified_test)
+    let mbg: GlobalAuditResult = global_uniformity_audit(thread_id, "martingale_betting", bucket);
+
+    // sprt drift detection test
+    let spp = meta_test_wrapper(thread_id, "sprt_drift", stream, sprt_drift_unified_test)
+    let spg: GlobalAuditResult = global_uniformity_audit(thread_id, "sprt_drift", bucket);
+
+    // permutation entropy test
+    let pep = meta_test_wrapper(thread_id, "permutation_entropy", stream, permutation_entropy_unified_test)
+    let peg: GlobalAuditResult = global_uniformity_audit(thread_id, "permutation_entropy", bucket);
+
+    // ---- NIST TESTS START HERE ---- (these are all binary tests)
+
+    // frequency test
+    let frp = meta_test_wrapper(thread_id, "nist_frequency", stream, nist_frequency_test)
+    let frg: GlobalAuditResult = global_uniformity_audit(thread_id, "nist_frequency", bucket);
+
+    // block frequency test
+    let nfp = meta_test_wrapper(thread_id, "nist_block_frequency", stream, nist_block_frequency_test)
+    let nfg: GlobalAuditResult = global_uniformity_audit(thread_id, "nist_block_frequency", bucket);
+
+    // runs test
+    let nrp = meta_test_wrapper(thread_id, "nist_runs", stream, nist_runs_test)
+    let nrg: GlobalAuditResult = global_uniformity_audit(thread_id, "nist_runs", bucket);
+
+    // longest run of ones test
+    let nlp = meta_test_wrapper(thread_id, "nist_longest_run", stream, nist_longest_run_of_ones_test)
+    let nlg: GlobalAuditResult = global_uniformity_audit(thread_id, "nist_longest_run", bucket);
+
+    // binary matrix rank test
+    let nbp = meta_test_wrapper(thread_id, "nist_binary_matrix", stream, nist_binary_matrix_rank_test)
+    let nbg: GlobalAuditResult = global_uniformity_audit(thread_id, "nist_binary_matrix", bucket);
+
+    // approximate entropy
+    let nbp = meta_test_wrapper(thread_id, "nist_binary_matrix", stream, nist_binary_matrix_rank_test)
+    let nbg: GlobalAuditResult = global_uniformity_audit(thread_id, "nist_binary_matrix", bucket);
+
+    // serial test 1
+    let s1p = meta_test_wrapper(thread_id, "nist_serial_p1", stream, nist_serial_p1_test)
+    let s1g: GlobalAuditResult = global_uniformity_audit(thread_id, "nist_serial_p1", bucket);
+
+    // serial test 2
+    let s1p = meta_test_wrapper(thread_id, "nist_serial_p2", stream, nist_serial_p2_test)
+    let s1g: GlobalAuditResult = global_uniformity_audit(thread_id, "nist_serial_p2", bucket);
+
+    // dft spectral test
+    let s1p = meta_test_wrapper(thread_id, "nist_dft_spectral", stream, nist_dft_spectral_test)
+    let s1g: GlobalAuditResult = global_uniformity_audit(thread_id, "nist_dft_spectral", bucket);
+
+    // non-overlapping template 9 test
+    let n9p = meta_test_wrapper(thread_id, "nist_non-overlapping_t9", stream, nist_non_overlapping_template_9_test)
+    let n9g: GlobalAuditResult = global_uniformity_audit(thread_id, "nist_non-overlapping_t9", bucket);
+
+    // non-overlapping template 10 test
+    let n10p = meta_test_wrapper(thread_id, "nist_non-overlapping_t10", stream, nist_non_overlapping_template_10_test)
+    let n10g: GlobalAuditResult = global_uniformity_audit(thread_id, "nist_non-overlapping_t10", bucket);
+
+    // overlapping template test
+    let nop = meta_test_wrapper(thread_id, "nist_overlapping", stream, nist_overlapping_template_test)
+    let nog: GlobalAuditResult = global_uniformity_audit(thread_id, "nist_overlapping", bucket);
+
+    // universal maurer test
+    let ump = meta_test_wrapper(thread_id, "nist_universal_maurer", stream, nist_universal_maurer_test)
+    let umg: GlobalAuditResult = global_uniformity_audit(thread_id, "nist_universal_maurer", bucket);
+
+    // linear complexity test
+    let lcp = meta_test_wrapper(thread_id, "nist_linear_complexity", stream, nist_linear_complexity_test)
+    let lcg: GlobalAuditResult = global_uniformity_audit(thread_id, "nist_linear_complexity", bucket);
+
+    // random excursions test
+    let re_tracker = run_excursion_test(thread_id,"nist_random_excursions",stream,nist_random_excursions_test);
+    excursion_history_push(thread_id,"nist_random_excursions",re_tracker.state_p.clone(),bucket);
+    let re_audit = excursion_uniformity_audit(thread_id,"nist_random_excursions",bucket);
+
+    // random excursion variant test
+    let rev_tracker = run_excursion_test(thread_id,"nist_re_variant",stream,nist_random_excursions_variant_test); 
+    excursion_history_push(thread_id,"nist_re_variant",rev_tracker.state_p.clone(),stream.bits.len());
+    let rev_audit = excursion_uniformity_audit(thread_id,"nist_re_variant",bucket);
+
+    return true;
 }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-pub struct EntropyStepReport {
-    pub step: usize,
-    pub num_tests: usize,
-    pub avg_p: f64,
-    pub avg_surprise: f64,
-}
-
-pub fn entropy_monitor_step(stream: &BitByteStream) -> EntropyStepReport {
-    let state = entropy_state_mut();
-
-    let mut ps = Vec::new();
-
-    // --- Core tests (you can expand this list as you like) ---
-    let p_byte = byte_frequency_test(stream);
-    state.record(TEST_BYTE_FREQ, p_byte);
-    ps.push(p_byte);
-
-    let p_gini = gini_randomness_test(stream);
-    state.record(TEST_GINI, p_gini);
-    ps.push(p_gini);
-
-    let p_kl = kl_divergence_test(stream);
-    state.record(TEST_KL, p_kl);
-    ps.push(p_kl);
-
-    let p_gap = gap_test(stream);
-    state.record(TEST_GAP, p_gap);
-    ps.push(p_gap);
-
-    let p_turn = turning_point_test(stream);
-    state.record(TEST_TURNING, p_turn);
-    ps.push(p_turn);
-
-    let p_lz = lz76_complexity_test(stream);
-    state.record(TEST_LZ76, p_lz);
-    ps.push(p_lz);
-
-    let p_maurer = maurer_universal_test(stream);
-    state.record(TEST_MAURER, p_maurer);
-    ps.push(p_maurer);
-
-    let p_spec = spectral_test(stream);
-    state.record(TEST_SPECTRAL, p_spec);
-    ps.push(p_spec);
-
-    let p_ncd = ncd_test(stream);
-    state.record(TEST_NCD, p_ncd);
-    ps.push(p_ncd);
-
-    let p_er = entropy_rate_stability_test(stream);
-    state.record(TEST_ENTROPY_RATE_STAB, p_er);
-    ps.push(p_er);
-
-    let p_star = star_discrepancy_test(stream);
-    state.record(TEST_STAR_DISCREPANCY, p_star);
-    ps.push(p_star);
-
-    let p_corr = correlation_dimension_test(stream);
-    state.record(TEST_CORR_DIM, p_corr);
-    ps.push(p_corr);
-
-    let p_chaos = chaos_01_test(stream);
-    state.record(TEST_CHAOS_01, p_chaos);
-    ps.push(p_chaos);
-
-    let p_sampen = sample_entropy_test(stream);
-    state.record(TEST_SAMPEN, p_sampen);
-    ps.push(p_sampen);
-
-    let p_snap = snapshot_distance_matrix_test(stream);
-    state.record(TEST_SNAPSHOT_MATRIX, p_snap);
-    ps.push(p_snap);
-
-    let p_cluster = segment_clustering_test(stream);
-    state.record(TEST_SEGMENT_CLUSTER, p_cluster);
-    ps.push(p_cluster);
-
-    let p_wass = wasserstein_drift_test(stream);
-    state.record(TEST_WASSERSTEIN_DRIFT, p_wass);
-    ps.push(p_wass);
-
-    let p_mart = martingale_betting_test(stream);
-    state.record(TEST_MARTINGALE, p_mart);
-    ps.push(p_mart);
-
-    let p_sprt = sprt_drift_test(stream);
-    state.record(TEST_SPRT, p_sprt);
-    ps.push(p_sprt);
-
-    // --- Meta: average p and average surprise ---
-    let num_tests = ps.len();
-    let mut sum_p = 0.0;
-    let mut sum_surprise = 0.0;
-
-    for &p in &ps {
-        sum_p += p;
-        let s = -((p + 1e-12).log10());
-        sum_surprise += s;
-    }
-
-    let avg_p = sum_p / (num_tests as f64);
-    let avg_surprise = sum_surprise / (num_tests as f64);
-
-    let step_idx = state.step;
-    state.step += 1;
-
-    EntropyStepReport {
-        step: step_idx,
-        num_tests,
-        avg_p,
-        avg_surprise,
-    }
-}
-
-
-
-// ================================================================
-//  Global Entropy State
-//  Tracks histories of test p-values over time
-// ================================================================
-
-const MAX_HISTORY: usize = 1024;
-const NUM_TESTS: usize = 32; // enough headroom for all tests
-
-#[derive(Clone, Copy)]
-pub struct TestId(pub usize);
-
-pub const TEST_BYTE_FREQ: TestId              = TestId(0);
-pub const TEST_GINI: TestId                   = TestId(1);
-pub const TEST_KL: TestId                     = TestId(2);
-pub const TEST_GAP: TestId                    = TestId(3);
-pub const TEST_TURNING: TestId                = TestId(4);
-pub const TEST_LZ76: TestId                   = TestId(5);
-pub const TEST_MAURER: TestId                 = TestId(6);
-pub const TEST_SPECTRAL: TestId               = TestId(7);
-pub const TEST_META_UNIFORMITY: TestId        = TestId(8);
-pub const TEST_META_CUSUM: TestId             = TestId(9);
-pub const TEST_NCD: TestId                    = TestId(10);
-pub const TEST_ENTROPY_RATE_STAB: TestId      = TestId(11);
-pub const TEST_STAR_DISCREPANCY: TestId       = TestId(12);
-pub const TEST_CORR_DIM: TestId               = TestId(13);
-pub const TEST_CHAOS_01: TestId               = TestId(14);
-pub const TEST_SAMPEN: TestId                 = TestId(15);
-pub const TEST_SNAPSHOT_MATRIX: TestId        = TestId(16);
-pub const TEST_SEGMENT_CLUSTER: TestId        = TestId(17);
-pub const TEST_WASSERSTEIN_DRIFT: TestId      = TestId(18);
-pub const TEST_MARTINGALE: TestId             = TestId(19);
-pub const TEST_SPRT: TestId                   = TestId(20);
-
-pub struct TestHistory {
-    pub values: [f64; MAX_HISTORY],
-    pub len: usize,
-}
-
-impl TestHistory {
-    pub const fn new() -> Self {
-        Self {
-            values: [0.0; MAX_HISTORY],
-            len: 0,
-        }
-    }
-
-    pub fn push(&mut self, v: f64) {
-        if self.len < MAX_HISTORY {
-            self.values[self.len] = v;
-            self.len += 1;
-        } else {
-            // simple ring: shift left
-            for i in 1..MAX_HISTORY {
-                self.values[i - 1] = self.values[i];
-            }
-            self.values[MAX_HISTORY - 1] = v;
-        }
-    }
-}
-
-pub struct EntropyState {
-    pub histories: [TestHistory; NUM_TESTS],
-    pub step: usize,
-}
-
-impl EntropyState {
-    pub const fn new() -> Self {
-        const EMPTY: TestHistory = TestHistory::new();
-        Self {
-            histories: [EMPTY; NUM_TESTS],
-            step: 0,
-        }
-    }
-
-    pub fn record(&mut self, id: TestId, p: f64) {
-        if id.0 < NUM_TESTS {
-            self.histories[id.0].push(p);
-        }
-    }
-}
-
-// Global mutable state (single-threaded assumption)
-static mut ENTROPY_STATE: EntropyState = EntropyState::new();
-
-pub fn entropy_state_mut() -> &'static mut EntropyState {
-    unsafe { &mut ENTROPY_STATE }
-}
-
-
-
-pub fn entropy_monitor_step(stream: &BitByteStream) -> EntropyStepReport {
-    let state = entropy_state_mut();
-
-    let mut ps = Vec::new();
-
-    // Example: run a few tests
-    let p_byte = byte_frequency_test(stream);
-    state.record(TEST_BYTE_FREQ, p_byte);
-    meta_history_push(p_byte);
-    ps.push(p_byte);
-
-    let p_lz = lz76_complexity_test(stream);
-    state.record(TEST_LZ76, p_lz);
-    meta_history_push(p_lz);
-    ps.push(p_lz);
-
-    let p_sprt = sprt_drift_test(stream);
-    state.record(TEST_SPRT, p_sprt);
-    meta_history_push(p_sprt);
-    ps.push(p_sprt);
-
-    // Compute global meta-uniformity
-    let p_meta_uniform = meta_uniformity_pvalue();
-    state.record(TEST_META_UNIFORMITY, p_meta_uniform);
-
-    // Compute meta-surprise
-    let mut sum_surprise = 0.0;
-    for &p in &ps {
-        sum_surprise += -((p + 1e-12).log10());
-    }
-    let avg_surprise = sum_surprise / (ps.len() as f64);
-
-    let step_idx = state.step;
-    state.step += 1;
-
-    EntropyStepReport {
-        step: step_idx,
-        num_tests: ps.len(),
-        avg_p: ps.iter().sum::<f64>() / (ps.len() as f64),
-        avg_surprise,
-    }
-}
-
-
-
-
-// ================================================================
-//  Compute Pearson correlation between two slices
-// ================================================================
-fn corr(a: &[f64], b: &[f64]) -> f64 {
-    let n = a.len().min(b.len());
-    if n < 5 { return 0.0; }
-
-    let mut sum_a = 0.0;
-    let mut sum_b = 0.0;
-
-    for i in 0..n {
-        sum_a += a[i];
-        sum_b += b[i];
-    }
-
-    let mean_a = sum_a / (n as f64);
-    let mean_b = sum_b / (n as f64);
-
-    let mut num = 0.0;
-    let mut den_a = 0.0;
-    let mut den_b = 0.0;
-
-    for i in 0..n {
-        let da = a[i] - mean_a;
-        let db = b[i] - mean_b;
-        num += da * db;
-        den_a += da * da;
-        den_b += db * db;
-    }
-
-    if den_a <= 0.0 || den_b <= 0.0 {
-        return 0.0;
-    }
-
-    num / (den_a.sqrt() * den_b.sqrt())
-}
-
-// ================================================================
-//  Extract history slice for a test
-// ================================================================
-fn history_slice(h: &TestHistory) -> &[f64] {
-    &h.values[..h.len]
-}
-
-// ================================================================
-//  Cross-Test Correlation Matrix
-// ================================================================
-pub struct CorrelationMatrix {
-    pub n: usize,
-    pub matrix: [[f64; NUM_TESTS]; NUM_TESTS],
-    pub clusterability: f64,
-}
-
-pub fn compute_correlation_matrix() -> CorrelationMatrix {
-    let state = entropy_state_mut();
-
-    let mut mat = [[0.0f64; NUM_TESTS]; NUM_TESTS];
-
-    // Compute correlations
-    for i in 0..NUM_TESTS {
-        for j in 0..NUM_TESTS {
-            let hi = history_slice(&state.histories[i]);
-            let hj = history_slice(&state.histories[j]);
-            mat[i][j] = corr(hi, hj);
-        }
-    }
-
-    // Compute clusterability:
-    // average absolute correlation off-diagonal
-    let mut sum = 0.0;
-    let mut count = 0usize;
-
-    for i in 0..NUM_TESTS {
-        for j in 0..NUM_TESTS {
-            if i != j {
-                sum += mat[i][j].abs();
-                count += 1;
-            }
-        }
-    }
-
-    let clusterability = if count > 0 {
-        sum / (count as f64)
-    } else {
-        0.0
-    };
-
-    CorrelationMatrix {
-        n: NUM_TESTS,
-        matrix: mat,
-        clusterability,
-    }
-}
-
-// ================================================================
-//  Compute Entropy Health Index (EHI)
-// ================================================================
-pub fn compute_entropy_health_index(
-    avg_p: f64,
-    avg_surprise: f64,
-    drift_score: f64,          // from SPRT + Wasserstein + martingale
-    structure_score: f64,      // chaos + SampEn + corr-dim normalized
-) -> f64 {
-    // Meta-uniformity
-    let p_meta = meta_uniformity_pvalue();
-
-    // Cross-test correlation matrix
-    let corr_mat = compute_correlation_matrix();
-    let clusterability = corr_mat.clusterability; // 0..1
-
-    // Normalize components
-    let p_norm = clamp01(avg_p);
-    let meta_norm = clamp01(p_meta);
-    let surprise_norm = clamp01(avg_surprise / 3.0); // typical surprise ~0.3–1.0
-    let cluster_norm = clamp01(clusterability);
-    let drift_norm = clamp01(drift_score);
-    let struct_norm = clamp01(structure_score);
-
-    // Combine into EHI
-    let ehi =
-        0.25 * p_norm +
-        0.15 * meta_norm +
-        0.20 * (1.0 - surprise_norm) +
-        0.15 * (1.0 - cluster_norm) +
-        0.15 * (1.0 - drift_norm) +
-        0.10 * struct_norm;
-
-    clamp01(ehi)
-}
-
-
-fn p_to_drift_surprise(p: f64) -> f64 {
-    let s = - (p + 1e-12).log10(); // 0 for p~1, grows as p->0
-    let s_norm = s / 3.0;          // cap around p ~ 1e-3
-    clamp01(s_norm)
-}
-
-// ================================================================
-//  Unified Drift Score
-//  Wasserstein + SPRT + Martingale → [0,1]
-// ================================================================
-pub fn compute_drift_score(stream: &BitByteStream) -> f64 {
-    let p_wass = wasserstein_drift_test(stream);
-    let p_sprt = sprt_drift_test(stream);
-    let p_mart = martingale_betting_test(stream);
-
-    let s_wass = p_to_drift_surprise(p_wass);
-    let s_sprt = p_to_drift_surprise(p_sprt);
-    let s_mart = p_to_drift_surprise(p_mart);
-
-    let drift_score = (s_wass + s_sprt + s_mart) / 3.0;
-    clamp01(drift_score)
-}
-
-fn p_to_structure_surprise(p: f64) -> f64 {
-    let s = - (p + 1e-12).log10();
-    let s_norm = s / 3.0;
-    clamp01(s_norm)
-}
-
-// ================================================================
-//  Structure Score
-//  Chaos + SampEn + Corr-Dim → [0,1]
-//  0 → boring / purely random or dead
-//  1 → rich, structured, nontrivial dynamics
-// ================================================================
-pub fn compute_structure_score(stream: &BitByteStream) -> f64 {
-    let p_chaos = chaos_01_test(stream);
-    let p_sampen = sample_entropy_test(stream);
-    let p_corr = correlation_dimension_test(stream);
-
-    let s_chaos = p_to_structure_surprise(p_chaos);
-    let s_sampen = p_to_structure_surprise(p_sampen);
-    let s_corr = p_to_structure_surprise(p_corr);
-
-    let structure_score = (s_chaos + s_sampen + s_corr) / 3.0;
-    clamp01(structure_score)
-}
-
-
-
-#[derive(Clone, Copy)]
-pub enum PhaseSignal {
-    Stable,
-    MildShift,
-    StrongTransition,
-}
-
-const PHASE_BUF: usize = 64;
-
-pub struct PhaseHistory {
-    pub drift: [f64; PHASE_BUF],
-    pub structure: [f64; PHASE_BUF],
-    pub meta_p: [f64; PHASE_BUF],
-    pub len: usize,
-}
-
-impl PhaseHistory {
-    pub const fn new() -> Self {
-        Self {
-            drift: [0.0; PHASE_BUF],
-            structure: [0.0; PHASE_BUF],
-            meta_p: [1.0; PHASE_BUF],
-            len: 0,
-        }
-    }
-
-    pub fn push(&mut self, drift: f64, structure: f64, meta_p: f64) {
-        if self.len < PHASE_BUF {
-            self.drift[self.len] = drift;
-            self.structure[self.len] = structure;
-            self.meta_p[self.len] = meta_p;
-            self.len += 1;
-        } else {
-            for i in 1..PHASE_BUF {
-                self.drift[i - 1] = self.drift[i];
-                self.structure[i - 1] = self.structure[i];
-                self.meta_p[i - 1] = self.meta_p[i];
-            }
-            self.drift[PHASE_BUF - 1] = drift;
-            self.structure[PHASE_BUF - 1] = structure;
-            self.meta_p[PHASE_BUF - 1] = meta_p;
-        }
-    }
-}
-
-static mut PHASE_HISTORY: PhaseHistory = PhaseHistory::new();
-
-pub fn phase_history_mut() -> &'static mut PhaseHistory {
-    unsafe { &mut PHASE_HISTORY }
-}
-
-pub fn detect_phase_transition() -> PhaseSignal {
-    let ph = phase_history_mut();
-    let n = ph.len;
-    if n < 16 {
-        return PhaseSignal::Stable;
-    }
-
-    let half = n / 2;
-
-    let (mut drift_a, mut drift_b) = (0.0, 0.0);
-    let (mut struct_a, mut struct_b) = (0.0, 0.0);
-    let (mut meta_a, mut meta_b) = (0.0, 0.0);
-
-    for i in 0..half {
-        drift_a += ph.drift[i];
-        struct_a += ph.structure[i];
-        meta_a += ph.meta_p[i];
-    }
-    for i in half..n {
-        drift_b += ph.drift[i];
-        struct_b += ph.structure[i];
-        meta_b += ph.meta_p[i];
-    }
-
-    let half_f = half as f64;
-    drift_a /= half_f; drift_b /= half_f;
-    struct_a /= half_f; struct_b /= half_f;
-    meta_a /= half_f; meta_b /= half_f;
-
-    let d_drift = (drift_b - drift_a).abs();
-    let d_struct = (struct_b - struct_a).abs();
-    let d_meta = (meta_b - meta_a).abs();
-
-    let score = d_drift + d_struct + d_meta;
-
-    if score > 0.8 {
-        PhaseSignal::StrongTransition
-    } else if score > 0.3 {
-        PhaseSignal::MildShift
-    } else {
-        PhaseSignal::Stable
-    }
-}
-
-pub struct EntropyFlightRecord {
-    pub step: usize,
-    pub drift_score: f64,
-    pub structure_score: f64,
-    pub meta_uniform_p: f64,
-    pub phase_signal: PhaseSignal,
-
-    // Key test p-values (you can expand/change this set later)
-    pub p_wasserstein: f64,
-    pub p_sprt: f64,
-    pub p_martingale: f64,
-    pub p_chaos: f64,
-    pub p_sampen: f64,
-    pub p_corrdim: f64,
-    pub p_lz: f64,
-    pub p_maurer: f64,
-}
-
-
-pub struct EntropyStepReport {
-    pub step: usize,
-    pub drift_score: f64,
-    pub structure_score: f64,
-    pub meta_uniform_p: f64,
-    pub phase_signal: PhaseSignal,
-}
-
-pub fn entropy_monitor_step(stream: &BitByteStream) -> EntropyStepReport {
-    let drift = compute_drift_score(stream);
-    let structure = compute_structure_score(stream);
-    let meta_p = meta_uniformity_pvalue();
-
-    {
-        let ph = phase_history_mut();
-        ph.push(drift, structure, meta_p);
-    }
-
-    let phase = detect_phase_transition();
-
-    let state = entropy_state_mut();
-    let step_idx = state.step;
-    state.step += 1;
-
-    EntropyStepReport {
-        step: step_idx,
-        drift_score: drift,
-        structure_score: structure,
-        meta_uniform_p: meta_p,
-        phase_signal: phase,
-    }
-}
-
-
-
-const FLIGHT_BUF: usize = 4096;
-
-pub struct EntropyFlightLog {
-    pub records: [EntropyFlightRecord; FLIGHT_BUF],
-    pub len: usize,
-}
-
-impl EntropyFlightLog {
-    pub const fn new() -> Self {
-        // We can't const-init EntropyFlightRecord easily; use a dummy and overwrite.
-        const DUMMY: EntropyFlightRecord = EntropyFlightRecord {
-            step: 0,
-            drift_score: 0.0,
-            structure_score: 0.0,
-            meta_uniform_p: 1.0,
-            phase_signal: PhaseSignal::Stable,
-            p_wasserstein: 1.0,
-            p_sprt: 1.0,
-            p_martingale: 1.0,
-            p_chaos: 1.0,
-            p_sampen: 1.0,
-            p_corrdim: 1.0,
-            p_lz: 1.0,
-            p_maurer: 1.0,
-        };
-
-        Self {
-            records: [DUMMY; FLIGHT_BUF],
-            len: 0,
-        }
-    }
-
-    pub fn push(&mut self, rec: EntropyFlightRecord) {
-        if self.len < FLIGHT_BUF {
-            self.records[self.len] = rec;
-            self.len += 1;
-        } else {
-            // simple ring
-            for i in 1..FLIGHT_BUF {
-                self.records[i - 1] = self.records[i];
-            }
-            self.records[FLIGHT_BUF - 1] = rec;
-        }
-    }
-}
-
-static mut FLIGHT_LOG: EntropyFlightLog = EntropyFlightLog::new();
-
-pub fn flight_log_mut() -> &'static mut EntropyFlightLog {
-    unsafe { &mut FLIGHT_LOG }
-}
-
-pub fn entropy_monitor_step(stream: &BitByteStream) -> EntropyFlightRecord {
-    let drift = compute_drift_score(stream);
-    let structure = compute_structure_score(stream);
-    let meta_p = meta_uniformity_pvalue();
-
-    // Individual drift-related p-values
-    let p_wass = wasserstein_drift_test(stream);
-    let p_sprt = sprt_drift_test(stream);
-    let p_mart = martingale_betting_test(stream);
-
-    // Structure-related p-values
-    let p_chaos = chaos_01_test(stream);
-    let p_sampen = sample_entropy_test(stream);
-    let p_corr = correlation_dimension_test(stream);
-
-    // Complexity-related p-values
-    let p_lz = lz76_complexity_test(stream);
-    let p_maurer = maurer_universal_test(stream);
-
-    // Update phase history
-    {
-        let ph = phase_history_mut();
-        ph.push(drift, structure, meta_p);
-    }
-
-    let phase = detect_phase_transition();
-
-    let state = entropy_state_mut();
-    let step_idx = state.step;
-    state.step += 1;
-
-    let rec = EntropyFlightRecord {
-        step: step_idx,
-        drift_score: drift,
-        structure_score: structure,
-        meta_uniform_p: meta_p,
-        phase_signal: phase,
-        p_wasserstein: p_wass,
-        p_sprt,
-        p_martingale: p_mart,
-        p_chaos,
-        p_sampen,
-        p_corrdim: p_corr,
-        p_lz,
-        p_maurer,
-    };
-
-    {
-        let log = flight_log_mut();
-        log.push(rec);
-    }
-
-    rec
-}
-
-pub fn flight_log_len() -> usize {
-    let log = flight_log_mut();
-    log.len
-}
-
-pub fn flight_log_get(i: usize) -> Option<EntropyFlightRecord> {
-    let log = flight_log_mut();
-    if i < log.len {
-        Some(log.records[i])
-    } else {
-        None
-    }
-}
-
-// Simple line formatter (CSV-like)
-pub fn format_record_csv(rec: &EntropyFlightRecord) -> String {
-    let phase_str = match rec.phase_signal {
-        PhaseSignal::Stable => "stable",
-        PhaseSignal::MildShift => "mild_shift",
-        PhaseSignal::StrongTransition => "strong_transition",
-    };
-
-    format!(
-        "{step},{drift:.6},{structure:.6},{meta_p:.6},{phase},\
-         {pw:.6},{ps:.6},{pm:.6},{pc:.6},{psa:.6},{pcd:.6},{plz:.6},{pmau:.6}",
-        step = rec.step,
-        drift = rec.drift_score,
-        structure = rec.structure_score,
-        meta_p = rec.meta_uniform_p,
-        phase = phase_str,
-        pw = rec.p_wasserstein,
-        ps = rec.p_sprt,
-        pm = rec.p_martingale,
-        pc = rec.p_chaos,
-        psa = rec.p_sampen,
-        pcd = rec.p_corrdim,
-        plz = rec.p_lz,
-        pmau = rec.p_maurer,
-    )
-}
-
-for i in 0..flight_log_len() {
-    if let Some(rec) = flight_log_get(i) {
-        let line = format_record_csv(&rec);
-        // print or write to file
-        println!("{}", line);
-    }
-}
-
-
-pub struct EntropyStepReport {
-    pub step: usize,
-    pub num_tests: usize,
-    pub avg_p: f64,
-    pub avg_surprise: f64,
-    pub ehi: f64,
-}
-
-pub fn entropy_monitor_step(stream: &BitByteStream) -> EntropyStepReport {
-    let state = entropy_state_mut();
-
-    // Run tests, record p-values, compute avg_p and avg_surprise
-    let report = run_all_tests_and_collect(stream);
-
-    // Compute drift score
-    let drift_score = compute_drift_score(stream); // SPRT + Wasserstein + martingale
-
-    // Compute structure score
-    let structure_score = compute_structure_score(stream); // chaos + SampEn + corr-dim
-
-    // Compute EHI
-    let ehi = compute_entropy_health_index(
-        report.avg_p,
-        report.avg_surprise,
-        drift_score,
-        structure_score,
-    );
-
-    EntropyStepReport {
-        step: report.step,
-        num_tests: report.num_tests,
-        avg_p: report.avg_p,
-        avg_surprise: report.avg_surprise,
-        ehi,
-    }
+fn main() {    
+    let bytes = generate_random_bytes(2 * 1024 * 1024);  
+    let stream = BitByteStream::new_from_bytes(bytes);
+    println!("run_tests returned: {}", run_tests(0, &stream));
 }
