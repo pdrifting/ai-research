@@ -6987,6 +6987,693 @@ pub fn spectral_csd_test(
     p
 }
 
+// ================================================================
+//  Bicoherence Proxy Test (FFT-based nonlinear interaction measure)
+//  — with full calibration debug logging
+// ================================================================
+pub fn bicoherence_proxy_test(
+    stream: &mut BitByteStream,
+    thread_id: usize,
+    sample_idx: usize,
+    segment_len: usize,
+) -> f64 {
+    use std::fs::OpenOptions;
+    use std::io::Write;
+
+    let bits = &stream.bits;
+    if bits.len() < segment_len {
+        return 0.0;
+    }
+
+    // ------------------------------------------------------------
+    // Convert bits → ±1 signal
+    // ------------------------------------------------------------
+    let mut x: Vec<f64> = Vec::with_capacity(segment_len);
+    for &b in &bits[..segment_len] {
+        x.push(if b == 1 { 1.0 } else { -1.0 });
+    }
+
+    // ------------------------------------------------------------
+    // FFT
+    // ------------------------------------------------------------
+    let mut fft_in: Vec<Complex64> = x.iter().map(|v| Complex64::new(*v, 0.0)).collect();
+    let mut planner = rustfft::FftPlanner::<f64>::new();
+    let fft = planner.plan_fft_forward(segment_len);
+    fft.process(&mut fft_in);
+
+    let half = segment_len / 2;
+    if half < 4 {
+        return 0.0;
+    }
+
+    // ------------------------------------------------------------
+    // Normalize amplitudes: A[f] = X[f] / |X[f]|
+    // ------------------------------------------------------------
+    let mut A: Vec<Complex64> = Vec::with_capacity(half);
+    for i in 0..half {
+        let c = fft_in[i];
+        let mag = (c.re * c.re + c.im * c.im).sqrt();
+        if mag > 0.0 {
+            A.push(Complex64::new(c.re / mag, c.im / mag));
+        } else {
+            A.push(Complex64::new(0.0, 0.0));
+        }
+    }
+
+    // ------------------------------------------------------------
+    // Random triads (f1, f2, f3 = f1+f2)
+    // ------------------------------------------------------------
+    let mut rng = oorandom::Rand32::new(0xBAD5EED);
+    let mut bi_vals = Vec::new();
+    let mut debug_triplets = Vec::new();
+
+    for _ in 0..256 {
+        let f1 = (rng.rand_u32() as usize % (half - 3)).max(1);
+        let f2 = (f1 * 3) % (half - 1);
+        let f3 = f1 + f2;
+        if f3 >= half {
+            continue;
+        }
+
+        let bi = A[f1] * A[f2] * A[f3].conj();
+        let mag = (bi.re * bi.re + bi.im * bi.im).sqrt();
+        bi_vals.push(mag);
+
+        if debug_triplets.len() < 32 {
+            debug_triplets.push(format!("{}:{}:{}", f1, f2, f3));
+        }
+    }
+
+    if bi_vals.is_empty() {
+        return 0.0;
+    }
+
+    let bico = bi_vals.iter().sum::<f64>() / (bi_vals.len() as f64);
+
+    // ------------------------------------------------------------
+    // p-value mapping (same as Python version)
+    // ------------------------------------------------------------
+    let p = {
+        let clipped = bico.min(1.0).max(0.0);
+        let pv = 0.5 * (1.0 - clipped);
+        pv.min(0.5).max(0.0)
+    };
+
+    // ------------------------------------------------------------
+    // DEBUG LOGGING
+    // ------------------------------------------------------------
+    {
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("bicoherence_proxy_debug.csv")
+            .unwrap();
+
+        if file.metadata().unwrap().len() == 0 {
+            writeln!(
+                file,
+                "thread_id,sample_idx,segment_len,half,\
+                 num_triads,bico,p_value,\
+                 first_fft_mags,first_norm_amps,triads,bi_vals"
+            ).unwrap();
+        }
+
+        // First 16 FFT magnitudes
+        let fft_mags: Vec<String> = fft_in[..half.min(16)]
+            .iter()
+            .map(|c| ((c.re * c.re + c.im * c.im).sqrt()).to_string())
+            .collect();
+
+        // First 16 normalized amplitudes
+        let norm_amps: Vec<String> = A[..A.len().min(16)]
+            .iter()
+            .map(|c| format!("{}+{}i", c.re, c.im))
+            .collect();
+
+        writeln!(
+            file,
+            "{},{},{},{},{},{},{},{},{},{},{}",
+            thread_id,
+            sample_idx,
+            segment_len,
+            half,
+            bi_vals.len(),
+            bico,
+            p,
+            fft_mags.join("|"),
+            norm_amps.join("|"),
+            debug_triplets.join("|"),
+            bi_vals.iter().map(|v| v.to_string()).collect::<Vec<_>>().join("|")
+        ).unwrap();
+    }
+
+    p
+}
+
+// ================================================================
+//  Polynomial Autocorrelation Fit (bits) — with full debug logging
+// ================================================================
+pub fn polynomial_autocorr_fit_test(
+    stream: &mut BitByteStream,
+    thread_id: usize,
+    sample_idx: usize,
+    max_lag: usize,
+    degree: usize,
+) -> f64 {
+    let bits = &stream.bits;
+    let n = bits.len();
+    if n < max_lag + 8 {
+        return 0.0;
+    }
+
+    // ------------------------------------------------------------
+    // Convert bits → ±1
+    // ------------------------------------------------------------
+    let seq: Vec<f64> = bits.iter().map(|&b| if b == 1 { 1.0 } else { -1.0 }).collect();
+
+    // ------------------------------------------------------------
+    // Compute autocorrelations for lags 1..max_lag
+    // ------------------------------------------------------------
+    let mut ac = Vec::with_capacity(max_lag);
+    for lag in 1..=max_lag {
+        let mut sum = 0.0;
+        for i in 0..(n - lag) {
+            sum += seq[i] * seq[i + lag];
+        }
+        ac.push(sum / ((n - lag) as f64));
+    }
+
+    // ------------------------------------------------------------
+    // Polynomial least squares fit: ac(l) ≈ Σ coeff[d] * l^d
+    // ------------------------------------------------------------
+    let m = ac.len();
+    if m < degree + 3 {
+        return 0.0;
+    }
+
+    // Build normal equations
+    let mut s = vec![0.0; 2 * degree + 3];
+    let mut t = vec![0.0; degree + 1];
+
+    for i in 0..m {
+        let l = (i + 1) as f64;
+        let y = ac[i];
+
+        let mut lp = 1.0;
+        for p in 0..(2 * degree + 3) {
+            s[p] += lp;
+            lp *= l;
+        }
+
+        let mut lp2 = 1.0;
+        for p in 0..=degree {
+            t[p] += lp2 * y;
+            lp2 *= l;
+        }
+    }
+
+    // Solve linear system for coefficients
+    let mut A = vec![vec![0.0; degree + 1]; degree + 1];
+    let mut B = vec![0.0; degree + 1];
+
+    for r in 0..=degree {
+        for c in 0..=degree {
+            A[r][c] = s[r + c];
+        }
+        B[r] = t[r];
+    }
+
+    let coeff = solve_linear_system(&A, &B).unwrap_or(vec![0.0; degree + 1]);
+
+    // ------------------------------------------------------------
+    // Compute R²
+    // ------------------------------------------------------------
+    let ac_mean = ac.iter().sum::<f64>() / (m as f64);
+
+    let mut ss_tot = 0.0;
+    let mut ss_res = 0.0;
+
+    for i in 0..m {
+        let l = (i + 1) as f64;
+        let mut y_hat = 0.0;
+        let mut lp = 1.0;
+        for d in 0..=degree {
+            y_hat += coeff[d] * lp;
+            lp *= l;
+        }
+
+        let y = ac[i];
+        ss_tot += (y - ac_mean).powi(2);
+        ss_res += (y - y_hat).powi(2);
+    }
+
+    let r2 = 1.0 - ss_res / (ss_tot + 1e-12);
+
+    // ------------------------------------------------------------
+    // p-value mapping (same as Python)
+    // ------------------------------------------------------------
+    let p = {
+        let clipped = r2.min(1.0).max(0.0);
+        let pv = 0.5 * (1.0 - clipped);
+        pv.max(0.0).min(0.5)
+    };
+
+    // ------------------------------------------------------------
+    // DEBUG LOGGING
+    // ------------------------------------------------------------
+    {
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("polynomial_autocorr_debug.csv")
+            .unwrap();
+
+        if file.metadata().unwrap().len() == 0 {
+            writeln!(
+                file,
+                "thread_id,sample_idx,n,max_lag,degree,r2,p_value,coeff,ac"
+            ).unwrap();
+        }
+
+        writeln!(
+            file,
+            "{},{},{},{},{},{},{},{},{}",
+            thread_id,
+            sample_idx,
+            n,
+            max_lag,
+            degree,
+            r2,
+            p,
+            coeff.iter().map(|v| v.to_string()).collect::<Vec<_>>().join("|"),
+            ac.iter().map(|v| v.to_string()).collect::<Vec<_>>().join("|")
+        ).unwrap();
+    }
+
+    p
+}
+
+// ================================================================
+//  Simple linear system solver (Gaussian elimination)
+// ================================================================
+fn solve_linear_system(a: &[Vec<f64>], b: &[f64]) -> Option<Vec<f64>> {
+    let n = b.len();
+    let mut A = a.to_vec();
+    let mut B = b.to_vec();
+
+    for i in 0..n {
+        // pivot
+        let mut pivot = i;
+        for r in (i + 1)..n {
+            if A[r][i].abs() > A[pivot][i].abs() {
+                pivot = r;
+            }
+        }
+        if A[pivot][i].abs() < 1e-12 {
+            return None;
+        }
+        A.swap(i, pivot);
+        B.swap(i, pivot);
+
+        // normalize
+        let div = A[i][i];
+        for c in i..n {
+            A[i][c] /= div;
+        }
+        B[i] /= div;
+
+        // eliminate
+        for r in 0..n {
+            if r != i {
+                let factor = A[r][i];
+                for c in i..n {
+                    A[r][c] -= factor * A[i][c];
+                }
+                B[r] -= factor * B[i];
+            }
+        }
+    }
+
+    Some(B)
+}
+
+// ================================================================
+//  Parabolic Run-Length Fit (bits) — with full debug logging
+// ================================================================
+pub fn parabolic_runlength_fit_test(
+    stream: &mut BitByteStream,
+    thread_id: usize,
+    sample_idx: usize,
+) -> f64 {
+    let bits = &stream.bits;
+    let n = bits.len();
+
+    // ------------------------------------------------------------
+    // Collect run lengths
+    // ------------------------------------------------------------
+    let mut runs = Vec::new();
+    let mut current = bits[0];
+    let mut length = 1usize;
+
+    for &b in &bits[1..] {
+        if b == current {
+            length += 1;
+        } else {
+            runs.push(length);
+            current = b;
+            length = 1;
+        }
+    }
+    runs.push(length);
+
+    let max_len = runs.iter().copied().max().unwrap_or(1).min(64);
+    let mut hist = vec![0usize; max_len + 1];
+
+    for &r in &runs {
+        let idx = r.min(max_len);
+        hist[idx] += 1;
+    }
+
+    // Build L and Y
+    let mut L = Vec::new();
+    let mut Y = Vec::new();
+    for l in 1..=max_len {
+        L.push(l as f64);
+        Y.push(hist[l] as f64);
+    }
+
+    let nL = L.len();
+    if nL < 5 || Y.iter().sum::<f64>() == 0.0 {
+        return 0.0;
+    }
+
+    // ------------------------------------------------------------
+    // Quadratic least squares fit: Y ≈ a + b*l + c*l^2
+    // ------------------------------------------------------------
+    let mut s0 = 0.0;
+    let mut s1 = 0.0;
+    let mut s2 = 0.0;
+    let mut s3 = 0.0;
+    let mut s4 = 0.0;
+
+    let mut t0 = 0.0;
+    let mut t1 = 0.0;
+    let mut t2 = 0.0;
+
+    for i in 0..nL {
+        let l = L[i];
+        let y = Y[i];
+        let l2 = l * l;
+
+        s0 += 1.0;
+        s1 += l;
+        s2 += l2;
+        s3 += l2 * l;
+        s4 += l2 * l2;
+
+        t0 += y;
+        t1 += l * y;
+        t2 += l2 * y;
+    }
+
+    let det = s0 * (s2 * s4 - s3 * s3)
+            - s1 * (s1 * s4 - s2 * s3)
+            + s2 * (s1 * s3 - s2 * s2);
+
+    if det.abs() < 1e-12 {
+        return 0.0;
+    }
+
+    let a = (t0 * (s2 * s4 - s3 * s3)
+           - s1 * (t1 * s4 - s3 * t2)
+           + s2 * (t1 * s3 - s2 * t2)) / det;
+
+    let b = (s0 * (t1 * s4 - s3 * t2)
+           - t0 * (s1 * s4 - s2 * s3)
+           + s2 * (s1 * t2 - t1 * s2)) / det;
+
+    let c = (s0 * (s2 * t2 - t1 * s3)
+           - s1 * (s1 * t2 - t1 * s2)
+           + t0 * (s1 * s3 - s2 * s2)) / det;
+
+    // ------------------------------------------------------------
+    // Compute R²
+    // ------------------------------------------------------------
+    let y_mean = Y.iter().sum::<f64>() / (nL as f64);
+
+    let mut ss_tot = 0.0;
+    let mut ss_res = 0.0;
+
+    for i in 0..nL {
+        let l = L[i];
+        let y = Y[i];
+        let y_hat = a + b * l + c * l * l;
+
+        ss_tot += (y - y_mean).powi(2);
+        ss_res += (y - y_hat).powi(2);
+    }
+
+    let r2 = 1.0 - ss_res / (ss_tot + 1e-12);
+
+    // ------------------------------------------------------------
+    // p-value mapping (same as Python)
+    // ------------------------------------------------------------
+    let p = {
+        let clipped = (r2 - 0.7).abs().min(1.0);
+        let pv = 0.5 * (1.0 - clipped);
+        pv.max(0.0).min(0.5)
+    };
+
+    // ------------------------------------------------------------
+    // DEBUG LOGGING
+    // ------------------------------------------------------------
+    {
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("parabolic_runlength_debug.csv")
+            .unwrap();
+
+        if file.metadata().unwrap().len() == 0 {
+            writeln!(
+                file,
+                "thread_id,sample_idx,n,max_len,num_runs,\
+                 a,b,c,r2,p_value,runs,hist"
+            ).unwrap();
+        }
+
+        writeln!(
+            file,
+            "{},{},{},{},{},{},{},{},{},{},{}",
+            thread_id,
+            sample_idx,
+            n,
+            max_len,
+            runs.len(),
+            a,
+            b,
+            c,
+            r2,
+            p,
+            runs.iter().map(|v| v.to_string()).collect::<Vec<_>>().join("|"),
+        ).unwrap();
+
+        writeln!(
+            file,
+            "{},{},HIST,{}",
+            thread_id,
+            sample_idx,
+            hist.iter().map(|v| v.to_string()).collect::<Vec<_>>().join("|")
+        ).unwrap();
+    }
+
+    p
+}
+
+// ================================================================
+//  Permutation Pattern Test (generalized OPERM, byte-based)
+//  - k-symbol permutations over consecutive bytes
+//  - Skips windows with ties
+//  - Chi-square vs uniform over k! permutations
+//  - Full debug logging
+// ================================================================
+pub fn permutation_pattern_unified_test(
+    stream: &mut BitByteStream,
+    thread_id: usize,
+    sample_idx: usize,
+    k: usize, // e.g., 4..6; 5 is OPERM5-like
+) -> f64 {
+    use std::fs::OpenOptions;
+    use std::io::Write;
+
+    let bytes = &stream.bytes;
+    let n = bytes.len();
+    if k < 3 || n < k * 10 {
+        return 0.0;
+    }
+
+    let fact_k = factorial_usize(k);
+    if fact_k == 0 || fact_k > 5040 {
+        return 0.0;
+    }
+
+    let mut counts = vec![0usize; fact_k];
+    let mut total_windows = 0usize;
+    let mut debug_perms: Vec<String> = Vec::new();
+
+    for start in 0..=(n - k) {
+        let window = &bytes[start..start + k];
+
+        if has_ties(window) {
+            continue;
+        }
+
+        let mut pairs: Vec<(u8, usize)> = window
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(i, v)| (v, i))
+            .collect();
+
+        pairs.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+
+        let mut ranks = vec![0usize; k];
+        for (rank, &(_, idx)) in pairs.iter().enumerate() {
+            ranks[idx] = rank;
+        }
+
+        let perm_index = lehmer_index(&ranks);
+        if perm_index >= fact_k {
+            continue;
+        }
+
+        counts[perm_index] += 1;
+        total_windows += 1;
+
+        if debug_perms.len() < 32 {
+            debug_perms.push(
+                ranks
+                    .iter()
+                    .map(|r| r.to_string())
+                    .collect::<Vec<_>>()
+                    .join("-"),
+            );
+        }
+    }
+
+    if total_windows < fact_k * 5 {
+        return 0.0;
+    }
+
+    let expected = total_windows as f64 / fact_k as f64;
+    let mut chi2 = 0.0;
+    for &c in &counts {
+        let diff = c as f64 - expected;
+        chi2 += diff * diff / expected;
+    }
+
+    let df = (fact_k - 1) as f64;
+    let p = sanitize_p(1.0 - chi_square_cdf(chi2, df));
+
+    {
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("permutation_pattern_debug.csv")
+            .unwrap();
+
+        if file.metadata().unwrap().len() == 0 {
+            writeln!(
+                file,
+                "thread_id,sample_idx,n,k,fact_k,total_windows,expected,chi2,df,p_value,counts,example_perms"
+            )
+            .unwrap();
+        }
+
+        writeln!(
+            file,
+            "{},{},{},{},{},{},{},{},{},{},{}",
+            thread_id,
+            sample_idx,
+            n,
+            k,
+            fact_k,
+            total_windows,
+            expected,
+            chi2,
+            df,
+            p,
+            counts
+                .iter()
+                .map(|v| v.to_string())
+                .collect::<Vec<_>>()
+                .join("|"),
+        )
+        .unwrap();
+
+        writeln!(
+            file,
+            "{},{},PERMS,{}",
+            thread_id,
+            sample_idx,
+            debug_perms.join("|")
+        )
+        .unwrap();
+    }
+
+    p
+}
+
+fn factorial_usize(k: usize) -> usize {
+    let mut r = 1usize;
+    for i in 2..=k {
+        r = r.saturating_mul(i);
+    }
+    r
+}
+
+fn has_ties(window: &[u8]) -> bool {
+    let mut seen = [false; 256];
+    for &b in window {
+        if seen[b as usize] {
+            return true;
+        }
+        seen[b as usize] = true;
+    }
+    false
+}
+
+// Lehmer code index for permutation given as ranks 0..k-1
+fn lehmer_index(ranks: &[usize]) -> usize {
+    let k = ranks.len();
+    let mut used = vec![false; k];
+    let mut idx = 0usize;
+    let mut fact = 1usize;
+    for i in (1..k).rev() {
+        fact *= i;
+    }
+
+    for (pos, &r) in ranks.iter().enumerate() {
+        let mut smaller_unused = 0usize;
+        for j in 0..r {
+            if !used[j] {
+                smaller_unused += 1;
+            }
+        }
+        idx += smaller_unused * fact;
+        used[r] = true;
+        if k - pos > 1 {
+            fact /= k - pos - 1;
+        }
+    }
+
+    idx
+}
+
+
+
+
+
 // ------------------------------------------------------------------
 // these are different kind of beast... not calibrating these
 // just the stats tracker is not working for them....
