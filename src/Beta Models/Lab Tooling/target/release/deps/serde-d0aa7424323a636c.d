@@ -1,0 +1,14 @@
+E:\Github\AI-Research\src\Beta Models\Lab Tooling\target\release\deps\serde-d0aa7424323a636c.d: C:\Users\User\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\lib.rs C:\Users\User\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\integer128.rs C:\Users\User\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\mod.rs C:\Users\User\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\de.rs C:\Users\User\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\ser.rs E:\Github\AI-Research\src\Beta\ Models\Lab\ Tooling\target\release\build\serde-bdaa4ff89aff0cc3\out/private.rs
+
+E:\Github\AI-Research\src\Beta Models\Lab Tooling\target\release\deps\libserde-d0aa7424323a636c.rlib: C:\Users\User\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\lib.rs C:\Users\User\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\integer128.rs C:\Users\User\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\mod.rs C:\Users\User\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\de.rs C:\Users\User\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\ser.rs E:\Github\AI-Research\src\Beta\ Models\Lab\ Tooling\target\release\build\serde-bdaa4ff89aff0cc3\out/private.rs
+
+E:\Github\AI-Research\src\Beta Models\Lab Tooling\target\release\deps\libserde-d0aa7424323a636c.rmeta: C:\Users\User\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\lib.rs C:\Users\User\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\integer128.rs C:\Users\User\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\mod.rs C:\Users\User\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\de.rs C:\Users\User\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\ser.rs E:\Github\AI-Research\src\Beta\ Models\Lab\ Tooling\target\release\build\serde-bdaa4ff89aff0cc3\out/private.rs
+
+C:\Users\User\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\lib.rs:
+C:\Users\User\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\integer128.rs:
+C:\Users\User\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\mod.rs:
+C:\Users\User\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\de.rs:
+C:\Users\User\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\ser.rs:
+E:\Github\AI-Research\src\Beta\ Models\Lab\ Tooling\target\release\build\serde-bdaa4ff89aff0cc3\out/private.rs:
+
+# env-dep:OUT_DIR=E:\\Github\\AI-Research\\src\\Beta Models\\Lab Tooling\\target\\release\\build\\serde-bdaa4ff89aff0cc3\\out
