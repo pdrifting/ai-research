@@ -3184,6 +3184,178 @@ pub fn lz76_segment_similarity_test(
 
 /*
 // ================================================================
+//  LZ76 Complexity Test (Byte-based)
+//  Measures algorithmic compressibility via LZ76 factorization
+//  Returns: p-value (f64)
+// ================================================================
+pub fn lz76_complexity_test(stream: &mut BitByteStream) -> f64 {
+    let n = stream.byte_len;
+    let data = &stream.bytes;
+
+    let mut factors = 0usize;
+    let mut i = 0usize;
+
+    while i < n {
+        let mut length = 1usize;
+        let mut best = 1usize;
+
+        // Try to extend the match
+        while i + length <= n {
+            let mut found = false;
+
+            // Search for data[i..i+length] in data[0..i]
+            for j in 0..=i.saturating_sub(length) {
+                if &data[j..j + length] == &data[i..i + length] {
+                    found = true;
+                    break;
+                }
+            }
+
+            if found {
+                best = length;
+                length += 1;
+            } else {
+                break;
+            }
+        }
+
+        factors += 1;
+        i += best;
+    }
+
+    let c_n = factors as f64;
+    let n_f = n as f64;
+
+    if n_f <= 1.0 {
+        return 0.0;
+    }
+
+    let log2_n = n_f.log2();
+    let expected = n_f / log2_n;
+    let variance = expected;
+
+    if variance <= 0.0 {
+        return 0.0;
+    }
+
+    sanitize_p(2.0 * (1.0 - normal_cdf(((c_n - expected) / variance.sqrt()).abs())))
+}
+*/
+
+// ================================================================
+//  LZ76 Complexity Test (Byte-based) — with debug logging
+//  Measures algorithmic compressibility via LZ76 factorization
+//  Returns: p-value (f64)
+// ================================================================
+pub fn lz76_complexity_test(
+    stream: &mut BitByteStream,
+    thread_id: usize,
+    sample_idx: usize,
+) -> f64 {
+    use std::fs::OpenOptions;
+    use std::io::Write;
+
+    let n = stream.byte_len;
+    let data = &stream.bytes;
+
+    let mut factors = 0usize;
+    let mut i = 0usize;
+
+    // Optional debug: record first few factor lengths
+    let mut debug_factor_lens: Vec<usize> = Vec::new();
+
+    while i < n {
+        let mut length = 1usize;
+        let mut best = 1usize;
+
+        // Try to extend the match
+        while i + length <= n {
+            let mut found = false;
+
+            // Search for data[i..i+length] in data[0..i]
+            for j in 0..=i.saturating_sub(length) {
+                if &data[j..j + length] == &data[i..i + length] {
+                    found = true;
+                    break;
+                }
+            }
+
+            if found {
+                best = length;
+                length += 1;
+            } else {
+                break;
+            }
+        }
+
+        if debug_factor_lens.len() < 32 {
+            debug_factor_lens.push(best);
+        }
+
+        factors += 1;
+        i += best;
+    }
+
+    let c_n = factors as f64;
+    let n_f = n as f64;
+
+    if n_f <= 1.0 {
+        return 0.0;
+    }
+
+    let log2_n = n_f.log2();
+    let expected = n_f / log2_n;
+    let variance = expected;
+
+    if variance <= 0.0 {
+        return 0.0;
+    }
+
+    let z = (c_n - expected) / variance.sqrt();
+    let p = sanitize_p(2.0 * (1.0 - normal_cdf(z.abs())));
+
+    // -------------------------
+    // DEBUG LOGGING
+    // -------------------------
+    {
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("lz76_complexity_debug.csv")
+            .unwrap();
+
+        if file.metadata().unwrap().len() == 0 {
+            writeln!(
+                file,
+                "thread_id,sample_idx,n,factors,c_n,expected,variance,z,p_value,factor_lengths"
+            ).unwrap();
+        }
+
+        writeln!(
+            file,
+            "{},{},{},{},{},{},{},{},{},{}",
+            thread_id,
+            sample_idx,
+            n,
+            factors,
+            c_n,
+            expected,
+            variance,
+            z,
+            p,
+            debug_factor_lens
+                .iter()
+                .map(|v| v.to_string())
+                .collect::<Vec<_>>()
+                .join("|")
+        ).unwrap();
+    }
+
+    p
+}
+
+/*
+// ================================================================
 //  Snapshot Distance Matrix Test
 // ================================================================
 pub fn snapshot_distance_matrix_unified_test(stream: &mut BitByteStream) -> f64 {
@@ -6815,45 +6987,10 @@ pub fn spectral_csd_test(
     p
 }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 // ------------------------------------------------------------------
+// these are different kind of beast... not calibrating these
+// just the stats tracker is not working for them....
+
 
 // ----------------------------------------------------------------
 // NIST Random Excursion Test Validation
