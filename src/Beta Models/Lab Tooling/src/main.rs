@@ -2512,6 +2512,57 @@ pub fn cusum_reverse_test(stream: &mut BitByteStream) -> f64 {
     cusum_core(zrev, n)
 }
 
+// ================================================================
+//  Empirical byte entropy
+// ================================================================
+fn byte_entropy(data: &[u8]) -> f64 {
+    let n = data.len();
+    if n == 0 {
+        return 0.0;
+    }
+
+    let mut counts = [0usize; 256];
+    for &b in data {
+        counts[b as usize] += 1;
+    }
+
+    let n_f = n as f64;
+    let mut h = 0.0;
+
+    for &c in counts.iter() {
+        if c == 0 {
+            continue;
+        }
+        let p = c as f64 / n_f;
+        h -= p * p.log2();
+    }
+
+    h
+}
+
+pub fn entropy_global_test(stream: &mut BitByteStream) -> f64 {
+    let n = stream.byte_len;
+    let bytes = &stream.bytes;
+
+    // Compute entropy at multiple scales
+    let scales = [n / 8, n / 4, n / 2, n];
+    let mut rates = Vec::new();
+
+    for &len in &scales {
+        if len >= 256 {
+            rates.push(byte_entropy(&bytes[..len]));
+        }
+    }
+
+    // If nothing valid, return 0
+    if rates.is_empty() {
+        return 0.0;
+    }
+
+    // Return the full-sample entropy (8-bit scale)
+    *rates.last().unwrap()
+}
+
 // ------------------------------------------------------------------------------------------------------
 // ------------------------------------------------------------------------------------------------------
 // ------------------------------------------------------------------------------------------------------
@@ -4882,285 +4933,104 @@ pub fn star_discrepancy_unified_test(
     p
 }
 
-/*
 // ================================================================
-//  Entropy Rate Stability Test
-//  Measures drift in H(n)/n across increasing prefix lengths
-//  Returns: p-value (f64)
+//  Entropy Conditional Test — with debug logging
 // ================================================================
-pub fn entropy_stability_unified_test(stream: &mut BitByteStream) -> f64 {
-    let n = stream.byte_len;
-    let bytes = &stream.bytes;
-    let scale = stream.entropy_scale;
-
-    match stream.entropy_mode {
-        EntropyMode::Global => {
-            // Multi-scale global entropy
-            let scales = vec![n / 8, n / 4, n / 2, n];
-
-            let mut rates = Vec::new();
-            for &len in &scales {
-                if len >= 256 {
-                    rates.push(byte_entropy(&bytes[..len]));
-                }
-            }
-
-            if rates.len() < 2 {
-                return 0.0;
-            }
-
-            let max_h = rates.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-            let min_h = rates.iter().cloned().fold(f64::INFINITY, f64::min);
-            let drift = max_h - min_h;
-
-            let stat = drift * (n as f64).sqrt() / 8.0 * scale;
-            sanitize_p(2.0 * (1.0 - normal_cdf(stat.abs())))
-        }
-
-        EntropyMode::Conditional => {
-            let segments = stream.entropy_segments;
-            let seg_len = n / segments;
-
-            if seg_len < 512 {
-                return 0.0;
-            }
-
-            let mut cond_entropies = Vec::with_capacity(segments);
-
-            for s in 0..segments {
-                let start = s * seg_len;
-                let end = start + seg_len;
-                let segment = &bytes[start..end];
-
-                let mut joint_counts = vec![0usize; 65536];
-                let mut marginal_counts = [0usize; 256];
-
-                for i in 0..segment.len() - 1 {
-                    let a = segment[i] as usize;
-                    let b = segment[i + 1] as usize;
-                    marginal_counts[a] += 1;
-                    joint_counts[(a << 8) | b] += 1;
-                }
-
-                let total = (segment.len() - 1) as f64;
-
-                let mut h_joint = 0.0;
-                for &c in &joint_counts {
-                    if c > 0 {
-                        let p = c as f64 / total;
-                        h_joint -= p * p.log2();
-                    }
-                }
-
-                let mut h_marg = 0.0;
-                for &c in &marginal_counts {
-                    if c > 0 {
-                        let p = c as f64 / total;
-                        h_marg -= p * p.log2();
-                    }
-                }
-
-                cond_entropies.push(h_joint - h_marg);
-            }
-
-            let max_h = cond_entropies.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-            let min_h = cond_entropies.iter().cloned().fold(f64::INFINITY, f64::min);
-            let drift = max_h - min_h;
-
-            let stat = drift * (seg_len as f64).sqrt() * scale;
-            sanitize_p(2.0 * (1.0 - normal_cdf(stat.abs())))
-        }
-    }
-}
-*/
-
-// ================================================================
-//  Empirical byte entropy
-// ================================================================
-fn byte_entropy(data: &[u8]) -> f64 {
-    let n = data.len();
-    if n == 0 {
-        return 0.0;
-    }
-
-    let mut counts = [0usize; 256];
-    for &b in data {
-        counts[b as usize] += 1;
-    }
-
-    let n_f = n as f64;
-    let mut h = 0.0;
-
-    for &c in counts.iter() {
-        if c == 0 {
-            continue;
-        }
-        let p = c as f64 / n_f;
-        h -= p * p.log2();
-    }
-
-    h
-}
-
-// ================================================================
-//  Entropy Stability Test — with debug logging
-// ================================================================
-pub fn entropy_stability_unified_test(
+pub fn entropy_conditional_test(
     stream: &mut BitByteStream,
     thread_id: usize,
     sample_idx: usize
 ) -> f64 {
     let n = stream.byte_len;
     let bytes = &stream.bytes;
-    let scale = stream.entropy_scale;
+    let segments = stream.entropy_segments;
+    let seg_len = n / segments;
+
+    if seg_len < 512 {
+        return 0.0;
+    }
 
     let filename = format!(
-        "entropy_stability_debug_{}_{}.csv",
+        "entropy_conditional_debug_{}_{}.csv",
         thread_id,
         sample_idx,
     );
-        
-    match stream.entropy_mode {
-        EntropyMode::Global => {
-            let scales = vec![n / 8, n / 4, n / 2, n];
 
-            let mut rates = Vec::new();
-            for &len in &scales {
-                if len >= 256 {
-                    rates.push(byte_entropy(&bytes[..len]));
-                }
-            }
+    let mut cond_entropies = Vec::with_capacity(segments);
 
-            if rates.len() < 2 {
-                return 0.0;
-            }
+    for s in 0..segments {
+        let start = s * seg_len;
+        let end = start + seg_len;
+        let segment = &bytes[start..end];
 
-            let max_h = rates.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-            let min_h = rates.iter().cloned().fold(f64::INFINITY, f64::min);
-            let drift = max_h - min_h;
+        let mut joint_counts = vec![0usize; 65536];
+        let mut marginal_counts = [0usize; 256];
 
-            let stat = drift * (n as f64).sqrt() / 8.0 * scale;
-            let p = sanitize_p(2.0 * (1.0 - normal_cdf(stat.abs())));
-
-            // ---- LOGGING ----
-            {
-                let mut file = OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(&filename)
-                    .unwrap();
-
-                if file.metadata().unwrap().len() == 0 {
-                    writeln!(
-                        file,
-                        "thread_id,sample_idx,mode,n,drift,stat,p_value,rates"
-                    ).unwrap();
-                }
-
-                writeln!(
-                    file,
-                    "{},{},{},{},{},{},{},{}",
-                    thread_id,
-                    sample_idx,
-                    "global",
-                    n,
-                    drift,
-                    stat,
-                    p,
-                    rates.iter().map(|v| v.to_string()).collect::<Vec<_>>().join("|")
-                ).unwrap();
-            }
-
-            p
+        for i in 0..segment.len() - 1 {
+            let a = segment[i] as usize;
+            let b = segment[i + 1] as usize;
+            marginal_counts[a] += 1;
+            joint_counts[(a << 8) | b] += 1;
         }
 
-        EntropyMode::Conditional => {
-            let segments = stream.entropy_segments;
-            let seg_len = n / segments;
+        let total = (segment.len() - 1) as f64;
 
-            if seg_len < 512 {
-                return 0.0;
+        let mut h_joint = 0.0;
+        for &c in &joint_counts {
+            if c > 0 {
+                let p = c as f64 / total;
+                h_joint -= p * p.log2();
             }
-
-            let mut cond_entropies = Vec::with_capacity(segments);
-
-            for s in 0..segments {
-                let start = s * seg_len;
-                let end = start + seg_len;
-                let segment = &bytes[start..end];
-
-                let mut joint_counts = vec![0usize; 65536];
-                let mut marginal_counts = [0usize; 256];
-
-                for i in 0..segment.len() - 1 {
-                    let a = segment[i] as usize;
-                    let b = segment[i + 1] as usize;
-                    marginal_counts[a] += 1;
-                    joint_counts[(a << 8) | b] += 1;
-                }
-
-                let total = (segment.len() - 1) as f64;
-
-                let mut h_joint = 0.0;
-                for &c in &joint_counts {
-                    if c > 0 {
-                        let p = c as f64 / total;
-                        h_joint -= p * p.log2();
-                    }
-                }
-
-                let mut h_marg = 0.0;
-                for &c in &marginal_counts {
-                    if c > 0 {
-                        let p = c as f64 / total;
-                        h_marg -= p * p.log2();
-                    }
-                }
-
-                cond_entropies.push(h_joint - h_marg);
-            }
-
-            let max_h = cond_entropies.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-            let min_h = cond_entropies.iter().cloned().fold(f64::INFINITY, f64::min);
-            let drift = max_h - min_h;
-
-            let stat = drift * (seg_len as f64).sqrt() * scale;
-            let p = sanitize_p(2.0 * (1.0 - normal_cdf(stat.abs())));
-
-            // ---- LOGGING ----
-            {
-                let mut file = OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(&filename)
-                    .unwrap();
-
-                if file.metadata().unwrap().len() == 0 {
-                    writeln!(
-                        file,
-                        "thread_id,sample_idx,mode,n,segments,seg_len,drift,stat,p_value,cond_entropies"
-                    ).unwrap();
-                }
-
-                writeln!(
-                    file,
-                    "{},{},{},{},{},{},{},{},{},{}",
-                    thread_id,
-                    sample_idx,
-                    "conditional",
-                    n,
-                    segments,
-                    seg_len,
-                    drift,
-                    stat,
-                    p,
-                    cond_entropies.iter().map(|v| v.to_string()).collect::<Vec<_>>().join("|")
-                ).unwrap();
-            }
-
-            p
         }
+
+        let mut h_marg = 0.0;
+        for &c in &marginal_counts {
+            if c > 0 {
+                let p = c as f64 / total;
+                h_marg -= p * p.log2();
+            }
+        }
+
+        cond_entropies.push(h_joint - h_marg);
     }
+
+    let max_h = cond_entropies.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    let min_h = cond_entropies.iter().cloned().fold(f64::INFINITY, f64::min);
+    let drift = max_h - min_h;
+
+    let stat = drift * (seg_len as f64).sqrt();
+    let p = sanitize_p(2.0 * (1.0 - normal_cdf(stat.abs())));
+
+    {
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&filename)
+            .unwrap();
+
+        if file.metadata().unwrap().len() == 0 {
+            writeln!(
+                file,
+                "thread_id,sample_idx,n,segments,seg_len,drift,stat,p_value,cond_entropies"
+            ).unwrap();
+        }
+
+        writeln!(
+            file,
+            "{},{},{},{},{},{},{},{},{}",
+            thread_id,
+            sample_idx,
+            n,
+            segments,
+            seg_len,
+            drift,
+            stat,
+            p,
+            cond_entropies.iter().map(|v| v.to_string()).collect::<Vec<_>>().join("|")
+        ).unwrap();
+    }
+
+    p
 }
 
 /*
@@ -8304,7 +8174,7 @@ pub fn run_calibrations(thread_id: usize, sample: usize, stream: &mut BitByteStr
 	kl_divergence_unified_test(stream, thread_id, sample);
 	gini_randomness_test(stream, thread_id, sample);
 	ncd_test(stream, thread_id, sample);
-	entropy_stability_unified_test(stream, thread_id, sample);
+	entropy_conditional_test(stream, thread_id, sample);
 	sample_entropy_unified_test(stream, thread_id, sample);
 	d2_correlation_test(stream, thread_id, sample);
 	segment_clustering_scaling_test(stream, thread_id, sample);
@@ -8603,10 +8473,10 @@ pub fn run_tests(thread_id: usize, stream: &mut BitByteStream) -> bool {
     let ncg: GlobalAuditResult = global_uniformity_audit(thread_id, "ncd_test", bucket);
 	scalar_rows.push(("ncd_test".to_string(), ncp, ncg));
 	
-    println!("entropy rate stability test");
-    let erp = meta_test_wrapper(thread_id, "entropy_rate_stability", stream, entropy_stability_unified_test);
-    let erg: GlobalAuditResult = global_uniformity_audit(thread_id, "entropy_rate_stability", bucket);
-	scalar_rows.push(("entropy_rate_stability".to_string(), erp, erg));
+    println!("entropy global stability test");
+    let erp = meta_test_wrapper(thread_id, "entropy_global", stream, entropy_global_test);
+    let erg: GlobalAuditResult = global_uniformity_audit(thread_id, "entropy_global", bucket);
+	scalar_rows.push(("entropy_global".to_string(), erp, erg));
 		
     println!("star discrepancy test");
     let ssp = meta_test_wrapper(thread_id, "star_discrepancy", stream, star_discrepancy_unified_test);
@@ -8738,20 +8608,20 @@ pub fn run_tests(thread_id: usize, stream: &mut BitByteStream) -> bool {
 }
 */
 
-fn generate_random_bytes(len: usize) -> Vec<u8> {
-    let mut rng = ChaCha20Rng::from_entropy();
+fn generate_random_bytes(rng: &mut ChaCha20Rng, len: usize) -> Vec<u8> {
     let mut buf = vec![0u8; len];
     rng.fill_bytes(&mut buf);
     buf
 }
 
-fn main() {    
-    println!("running tests");
-	for i in 0..1200 {
-        let bytes = generate_random_bytes(131_072);  
+fn main() {
+    let mut rng = ChaCha20Rng::from_entropy();
+
+    for i in 0..1200 {
+        let bytes = generate_random_bytes(&mut rng, 131_072);
         let mut stream = BitByteStream::new_from_bytes(bytes);
-	    //println!("run_tests returned: {}", run_tests(0, &mut stream));
-		run_calibrations(0, 1, &mut stream);
-		println!("runing calibrations: {}", i);
-	}
+        run_calibrations(0, 1, &mut stream);
+        println!("running calibrations: {}", i);
+    }
 }
+
