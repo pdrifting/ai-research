@@ -2558,9 +2558,6 @@ fn quadratic_character_balance_test_panel(
     prime: u32,
     word_size: usize,
 ) -> f64 {
-    use std::fs::OpenOptions;
-    use std::io::Write;
-
     let bytes = &stream.bytes;
     if bytes.is_empty() || word_size == 0 {
         return 0.0;
@@ -2680,7 +2677,7 @@ fn log_quadratic_panel(
 
     writeln!(
         file,
-        "{},{},{},{},{},{},{},{},{},{},{},{},{}",
+        "{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
         thread_id,
         sample_idx,
         panel_idx,
@@ -3954,7 +3951,7 @@ pub fn martingale_betting_unified_test(
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
-            .open("martingale_debug.csv")
+            .open(&filename)
             .unwrap();
 
         if file.metadata().unwrap().len() == 0 {
@@ -4093,12 +4090,13 @@ pub fn wasserstein_drift_unified_test(
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
-            .open(&filename);
+            .open(&filename)
+			.unwrap();
 
         if file.metadata().unwrap().len() == 0 {
             writeln!(
                 file,
-                "thread_id,sample_idx,n,k,seg_len,expected_var,scale,mean,var,deviation,stat,p_value,distances"
+                "thread_id,sample_idx,n,k,seg_len,expected_var,scale,mean,var,deviation,stat,p_value,distances",
             ).unwrap();
         }
 
@@ -4377,7 +4375,7 @@ pub fn segment_clustering_scaling_test(
 
         writeln!(
             file,
-            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
             thread_id,
             sample_idx,
             n,
@@ -6893,7 +6891,7 @@ pub fn bicoherence_proxy_test(
     // ------------------------------------------------------------
     // Random triads (f1, f2, f3 = f1+f2)
     // ------------------------------------------------------------
-    let mut rng = oorandom::Rand32::new(0xBAD5EED);
+    let mut rng = random::Rand32::new(0xBAD5EED);
     let mut bi_vals = Vec::new();
     let mut debug_triplets = Vec::new();
 
@@ -7650,16 +7648,18 @@ pub fn ripley_k_unified_test(
     // ------------------------------------------------------------
     {
         let filename = format!(
-            "permutation_pattern_debug_{}_{}_{}.csv",
+            "ripley_k_debug_{}_{}_{}_{}_{}.csv",
             thread_id,
             sample_idx,
-			k,
+			n_points,
+            n_radii,
+            r_max,
         );
 
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
-            .open("ripley_k_debug.csv")
+            .open(&filename)
             .unwrap();
 
         if file.metadata().unwrap().len() == 0 {
@@ -7808,7 +7808,7 @@ pub fn voronoi_cell_volume_unified_test(
     // ------------------------------------------------------------
     {
         let filename = format!(
-            "voronoi_cell_volume_debug_{}_{}_{}.csv",
+            "voronoi_cell_volume_debug_{}_{}_{}_{}.csv",
             thread_id,
             sample_idx,
 			n_points,
@@ -7818,7 +7818,7 @@ pub fn voronoi_cell_volume_unified_test(
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
-            .open("voronoi_cell_volume_debug.csv")
+            .open(&filename)
             .unwrap();
 
         if file.metadata().unwrap().len() == 0 {
@@ -8244,7 +8244,7 @@ pub fn run_calibrations(thread_id: usize, sample: usize, stream: &mut BitByteStr
         (4294967291, 4),   // 32-bit words    
 	];
 	
-	quadratic_character_multi_panel_test(stream, thread_id, sample, panels);
+	quadratic_character_multi_panel_test(stream, thread_id, sample, &panels);
 
 	birthday_spacing_unified_test(stream, thread_id, sample,32);
 	birthday_spacing_unified_test(stream, thread_id, sample,64);
@@ -8278,6 +8278,21 @@ pub fn run_calibrations(thread_id: usize, sample: usize, stream: &mut BitByteStr
 	voronoi_cell_volume_unified_test(stream, thread_id, sample,1024,8192);
 	voronoi_cell_volume_unified_test(stream, thread_id, sample,1024,16384);
     voronoi_cell_volume_unified_test(stream, thread_id, sample,1024,32768);
+	
+	ripley_k_unified_test(stream, thread_id, sample, 256, 16, 0.20);
+	ripley_k_unified_test(stream, thread_id, sample, 256, 16, 0.25);
+	ripley_k_unified_test(stream, thread_id, sample, 256, 32, 0.20);
+	ripley_k_unified_test(stream, thread_id, sample, 256, 32, 0.25);
+	
+	ripley_k_unified_test(stream, thread_id, sample, 512, 16, 0.20);
+	ripley_k_unified_test(stream, thread_id, sample, 512, 16, 0.25);
+	ripley_k_unified_test(stream, thread_id, sample, 512, 32, 0.20);
+	ripley_k_unified_test(stream, thread_id, sample, 512, 32, 0.25);
+	
+	ripley_k_unified_test(stream, thread_id, sample, 1024, 16, 0.20);
+	ripley_k_unified_test(stream, thread_id, sample, 1024, 16, 0.25);
+	ripley_k_unified_test(stream, thread_id, sample, 1024, 32, 0.20);
+	ripley_k_unified_test(stream, thread_id, sample, 1024, 32, 0.25);
 }
 
 // ------------------------------------------------------------------
@@ -8659,7 +8674,7 @@ fn main() {
         let bytes = generate_random_bytes(131_072);  
         let mut stream = BitByteStream::new_from_bytes(bytes);
 	    //println!("run_tests returned: {}", run_tests(0, &mut stream));
-		run_calibrations(0, &mut stream);
+		run_calibrations(0, 1, &mut stream);
 		println!("runing calibrations: {}", i);
 	}
 }
