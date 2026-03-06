@@ -9,6 +9,7 @@ dependencies = [
  "bincode",
  "chrono",
  "lazy_static",
+ "num-complex",
  "once_cell",
  "rand",
  "rand_chacha",

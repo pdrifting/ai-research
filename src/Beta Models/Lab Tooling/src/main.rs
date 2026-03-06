@@ -5,15 +5,20 @@ use std::sync::Mutex;
 use rayon::prelude::*;
 //use std::sync::atomic::{AtomicBool, Ordering};
 use statrs::function::gamma;
-use rustfft::num_complex::Complex;
+//use rustfft::num_complex::Complex;
 use std::sync::LazyLock;
 //use serde::{Serialize, Deserialize};
 use once_cell::sync::Lazy;
 use rand::{RngCore, SeedableRng};
+use rand::prelude::*;
 use rand_chacha::ChaCha20Rng;
 use core::f64::consts::PI;
 use std::fs::OpenOptions;
 use std::io::Write;
+
+use num_complex::Complex;
+type Complex64 = Complex<f64>;
+
 
 // ---------------------------------------------------------------------------
 // Cephes math constants
@@ -2416,7 +2421,7 @@ pub fn gap_test(stream: &mut BitByteStream) -> f64 {
 //  Nibble Markov Transition Test
 // ================================================================
 pub fn nibble_markov_test(stream: &mut BitByteStream) -> f64 {
-    let n = stream.byte_len;
+    //let n = stream.byte_len;
     let data = &stream.bytes;
 
     // 16 x 16 transition counts
@@ -2707,7 +2712,7 @@ fn legendre_symbol_u32(a: u32, p: u32) -> i32 {
 // ================================================================
 //  Modular exponentiation
 // ================================================================
-fn modexp_u32(mut a: u32, mut e: u32, m: u32) -> u32 {
+fn modexp_u32(a: u32, mut e: u32, m: u32) -> u32 {
     let mut r: u64 = 1;
     let mut base: u64 = (a % m) as u64;
     let modulus: u64 = m as u64;
@@ -2843,7 +2848,7 @@ pub fn maurer_universal_byte_test(
     // -------------------------
     {
         let filename = format!(
-            "lz76_segment_similarity_debug_{}_{}.csv",
+            "maurer_universal_debug_{}_{}.csv",
             thread_id,
             sample_idx,
         );
@@ -2851,7 +2856,7 @@ pub fn maurer_universal_byte_test(
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
-            .open("maurer_universal_debug.csv")
+            .open(&filename)
             .unwrap();
 
         if file.metadata().unwrap().len() == 0 {
@@ -5520,7 +5525,7 @@ pub fn kl_divergence_unified_test(
             let mut file = OpenOptions::new()
                 .create(true)
                 .append(true)
-                .open("kl_divergence_debug.csv")
+                .open(&filename)
                 .unwrap();
 
             if file.metadata().unwrap().len() == 0 {
@@ -5559,7 +5564,7 @@ pub fn kl_divergence_unified_test(
             let mut file = OpenOptions::new()
                 .create(true)
                 .append(true)
-                .open("kl_divergence_debug.csv")
+                .open(&filename)
                 .unwrap();
 
             if file.metadata().unwrap().len() == 0 {
@@ -6058,6 +6063,59 @@ pub fn predictability_test(
     }
 
     p
+}
+
+fn solve_linear(a: &Vec<Vec<f64>>, b: &Vec<f64>) -> Vec<f64> {
+    let n = b.len();
+    let mut a = a.clone();
+    let mut b = b.clone();
+
+    for i in 0..n {
+        // Pivot: find row with largest absolute value in column i
+        let mut max_row = i;
+        for r in (i + 1)..n {
+            if a[r][i].abs() > a[max_row][i].abs() {
+                max_row = r;
+            }
+        }
+
+        // Swap rows in A and B
+        a.swap(i, max_row);
+        b.swap(i, max_row);
+
+        // If pivot is zero, system is singular → return zeros
+        if a[i][i].abs() < 1e-12 {
+            return vec![0.0; n];
+        }
+
+        // Normalize pivot row
+        let pivot = a[i][i];
+        for j in i..n {
+            a[i][j] /= pivot;
+        }
+        b[i] /= pivot;
+
+        // Eliminate below
+        for r in (i + 1)..n {
+            let factor = a[r][i];
+            for c in i..n {
+                a[r][c] -= factor * a[i][c];
+            }
+            b[r] -= factor * b[i];
+        }
+    }
+
+    // Back substitution
+    let mut x = vec![0.0; n];
+    for i in (0..n).rev() {
+        let mut sum = b[i];
+        for j in (i + 1)..n {
+            sum -= a[i][j] * x[j];
+        }
+        x[i] = sum;
+    }
+
+    x
 }
 
 /*
@@ -6891,14 +6949,15 @@ pub fn bicoherence_proxy_test(
     // ------------------------------------------------------------
     // Random triads (f1, f2, f3 = f1+f2)
     // ------------------------------------------------------------
-    let mut rng = random::Rand32::new(0xBAD5EED);
+    let mut rng = ChaCha20Rng::seed_from_u64(0xBAD5EED);
     let mut bi_vals = Vec::new();
     let mut debug_triplets = Vec::new();
 
     for _ in 0..256 {
-        let f1 = (rng.rand_u32() as usize % (half - 3)).max(1);
+        let f1 = (rng.next_u32() as usize % (half - 3)).max(1);
         let f2 = (f1 * 3) % (half - 1);
         let f3 = f1 + f2;
+
         if f3 >= half {
             continue;
         }
@@ -7779,7 +7838,7 @@ pub fn voronoi_cell_volume_unified_test(
     // ------------------------------------------------------------
     // Cell areas and coefficient of variation
     // ------------------------------------------------------------
-    let mut areas: Vec<f64> = counts
+    let areas: Vec<f64> = counts
         .iter()
         .map(|&c| c as f64 / (n_probes as f64))
         .collect();
@@ -8162,6 +8221,24 @@ pub fn birthday_spacing_unified_test(
     p
 }
 
+pub fn poisson_cdf(k: u32, lambda: f64) -> f64 {
+    if lambda <= 0.0 {
+        return if k >= 0 { 1.0 } else { 0.0 };
+    }
+
+    let mut term = (-lambda).exp();
+    let mut sum = term;
+
+    for i in 1..=k {
+        term *= lambda / (i as f64);
+        sum += term;
+
+        if sum >= 1.0 { return 1.0; }
+    }
+
+    sum
+}
+
 // --------------------------------------------------------------------------------
 
 pub fn run_calibrations(thread_id: usize, sample: usize, stream: &mut BitByteStream) {
@@ -8369,7 +8446,7 @@ pub fn nist_random_excursions_test(stream: &mut BitByteStream) -> Vec<Option<f64
 
     let mut nu = [[0f64; 8]; 6];
     let mut counter = [0usize; 8];    
-    let mut last_zero = 0usize;
+    //let mut last_zero = 0usize;
     for i in 0..n {
         let val = s_k[i];
         if (val >= 1 && val <= 4) || (val >= -4 && val <= -1) {
@@ -8384,7 +8461,7 @@ pub fn nist_random_excursions_test(stream: &mut BitByteStream) -> Vec<Option<f64
                 if c <= 4 { nu[c][k] += 1.0; } else { nu[5][k] += 1.0; }
                 counter[k] = 0;
             }
-            last_zero = i;
+            //last_zero = i;
         }
     }
 
