@@ -5568,15 +5568,18 @@ pub fn kl_divergence_unified_test(
     thread_id: usize,
     sample_idx: usize,
 ) -> f64 {
-    use std::fs::OpenOptions;
-    use std::io::Write;
-
     let n = stream.byte_len;
     let scale = stream.kl_scale;
 
     // ---------------------------------------------------------
     // 0‑ORDER KL: BYTE HISTOGRAM
     // ---------------------------------------------------------
+    let filename = format!(
+        "kl_divergence_debug_{}_{}.csv",
+        thread_id,
+        sample_idx,
+    );
+
     if !stream.use_transition_kl {
         let n_f = n as f64;
         let uniform_p = 1.0 / 256.0;
@@ -5613,8 +5616,8 @@ pub fn kl_divergence_unified_test(
 
             writeln!(
                 file,
-                "{},{},{},{},{},{},{},{},{},{}",
-                thread_id,
+                "{},{},{},{},{},{},{},{},{},{}",                
+				thread_id,
                 sample_idx,
                 "byte_hist",
                 n,
@@ -5766,17 +5769,10 @@ pub fn turning_point_test(
     thread_id: usize,
     sample_idx: usize,
 ) -> f64 {
-    use std::fs::OpenOptions;
-    use std::io::Write;
-
     let n = stream.byte_len;
     let bytes = &stream.bytes;
-
-    if n < 3 {
-        return 0.0;
-    }
-
     let mut t = 0usize;
+
     for i in 1..(n - 1) {
         let a = bytes[i - 1];
         let b = bytes[i];
@@ -5793,13 +5789,19 @@ pub fn turning_point_test(
     let expected = 2.0 * (n_f - 2.0) / 3.0;
     let variance = (16.0 * n_f - 29.0) / 90.0;
 
+    let filename = format!(
+        "turning_point_debug_{}_{}.csv",
+        thread_id,
+        sample_idx,
+    );
+
     if variance <= 0.0 {
         // log degenerate case
         {
             let mut file = OpenOptions::new()
                 .create(true)
                 .append(true)
-                .open("turning_point_debug.csv")
+                .open(&filename)
                 .unwrap();
 
             if file.metadata().unwrap().len() == 0 {
@@ -5835,7 +5837,7 @@ pub fn turning_point_test(
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
-            .open("turning_point_debug.csv")
+            .open(&filename)
             .unwrap();
 
         if file.metadata().unwrap().len() == 0 {
@@ -5921,10 +5923,6 @@ pub fn permutation_entropy_unified_test(
     thread_id: usize,
     sample_idx: usize,
 ) -> f64 {
-    use std::collections::HashMap;
-    use std::fs::OpenOptions;
-    use std::io::Write;
-
     let n = stream.byte_len;
     let bytes = &stream.bytes;
     let d = stream.perm_d;
@@ -5967,10 +5965,16 @@ pub fn permutation_entropy_unified_test(
 
     // ---- LOGGING ----
     {
+        let filename = format!(
+            "perm_entropy_debug_{}_{}.csv",
+            thread_id,
+            sample_idx,
+        );
+
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
-            .open("perm_entropy_debug.csv")
+            .open(&filename)
             .unwrap();
 
         if file.metadata().unwrap().len() == 0 {
@@ -6010,16 +6014,14 @@ pub fn permutation_entropy_unified_test(
 pub fn predictability_test(
     stream: &mut BitByteStream,
     thread_id: usize,
-    sample_idx: usize
+    sample_idx: usize,
+	window: usize,
+	degree: usize
 ) -> f64 {
     let data = &stream.bytes;
     let n = data.len();
-    if n < 300 {
-        return 0.5;
-    }
-
-    let window = 4;
-    let degree = 2;
+    //let window = 4;
+    //let degree = 2;
 
     let mut xs: Vec<[f64; 4]> = Vec::new();
     let mut ys: Vec<f64> = Vec::new();
@@ -6099,19 +6101,24 @@ pub fn predictability_test(
 
     // ---- LOGGING ----
     {
-        use std::fs::OpenOptions;
-        use std::io::Write;
+        let filename = format!(
+            "predictability_debug_{}_{}_{}_{}.csv",
+            thread_id,
+            sample_idx,
+			window,
+			degree,
+        );
 
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
-            .open("predictability_debug.csv")
+            .open(&filename)
             .unwrap();
 
         if file.metadata().unwrap().len() == 0 {
             writeln!(
                 file,
-                "thread_id,sample_idx,p,chi2,coeff,r_mean,r_var"
+                "thread_id,sample_idx,p,windows,degree,chi2,coeff,r_mean,r_var"
             ).unwrap();
         }
 
@@ -6121,104 +6128,16 @@ pub fn predictability_test(
 
         writeln!(
             file,
-            "{},{},{},{},{},{},{}",
+            "{},{},{},{},{},{},{},{},{}",
             thread_id,
             sample_idx,
-            p,
-            chi2,
+			p,
+            window,
+			degree,
+			chi2,
             coeff.iter().map(|v| v.to_string()).collect::<Vec<_>>().join("|"),
             r_mean,
-            r_var
-        ).unwrap();
-    }
-
-    p
-}
-
-// ================================================================
-//  Triplet Heavy-Frequency Test (Byte-based) with logging
-// ================================================================
-pub fn triplet_heavy_test(
-    stream: &mut BitByteStream,
-    thread_id: usize,
-    sample_idx: usize,
-) -> f64 {
-    use std::collections::HashMap;
-    use std::fs::OpenOptions;
-    use std::io::Write;
-
-    let n = stream.byte_len;
-    if n < 4 {
-        return 0.5;
-    }
-
-    let data = &stream.bytes;
-    let mut counts: HashMap<[u8; 3], u64> = HashMap::new();
-
-    for w in data.windows(3) {
-        let key = [w[0], w[1], w[2]];
-        *counts.entry(key).or_insert(0) += 1;
-    }
-
-    let total: u64 = counts.values().sum();
-    if total == 0 {
-        return 0.5;
-    }
-
-    let mut freq: Vec<u64> = counts.values().cloned().collect();
-    freq.sort_unstable_by(|a, b| b.cmp(a)); // descending
-
-    let k = freq.len().min(32); // top-32 triplets
-    if k < 2 {
-        return 0.5;
-    }
-
-    let top = &freq[..k];
-    let top_sum: u64 = top.iter().sum();
-    let expected = (top_sum as f64) / (k as f64);
-
-    let mut chi2 = 0.0;
-    for &obs in top {
-        let o = obs as f64;
-        let diff = o - expected;
-        chi2 += diff * diff / expected;
-    }
-
-    let df = (k - 1) as f64;
-    let p = sanitize_p(1.0 - chi_square_cdf(chi2, df));
-
-    // ---- LOGGING ----
-    {
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open("triplet_heavy_debug.csv")
-            .unwrap();
-
-        if file.metadata().unwrap().len() == 0 {
-            writeln!(
-                file,
-                "thread_id,sample_idx,n,total,k,top_sum,expected,chi2,df,p_value,top_freq"
-            ).unwrap();
-        }
-
-        writeln!(
-            file,
-            "{},{},{},{},{},{},{},{},{},{},{}",
-            thread_id,
-            sample_idx,
-            n,
-            total,
-            k,
-            top_sum,
-            expected,
-            chi2,
-            df,
-            p,
-            top.iter()
-                .map(|v| v.to_string())
-                .collect::<Vec<_>>()
-                .join("|")
+            r_var,			
         ).unwrap();
     }
 
@@ -6322,10 +6241,16 @@ pub fn triplet_heavy_test(
 
     // ---- LOGGING ----
     {
+        let filename = format!(
+            "triplet_heavy_debug_{}_{}.csv",
+            thread_id,
+            sample_idx,
+        );
+
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
-            .open("triplet_heavy_debug.csv")
+            .open(&filename)
             .unwrap();
 
         if file.metadata().unwrap().len() == 0 {
@@ -6410,15 +6335,7 @@ pub fn doublet_heavy_test(
     thread_id: usize,
     sample_idx: usize,
 ) -> f64 {
-    use std::collections::HashMap;
-    use std::fs::OpenOptions;
-    use std::io::Write;
-
-    let n = stream.byte_len;
-    if n < 3 {
-        return 0.5;
-    }
-
+    let n = stream.byte_len;    
     let data = &stream.bytes;
     let mut counts: HashMap<[u8; 2], u64> = HashMap::new();
 
@@ -6456,10 +6373,16 @@ pub fn doublet_heavy_test(
 
     // ---- LOGGING ----
     {
+        let filename = format!(
+            "doublet_heavy_debug_{}_{}.csv",
+            thread_id,
+            sample_idx,
+        );
+
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
-            .open("doublet_heavy_debug.csv")
+            .open(&filename)
             .unwrap();
 
         if file.metadata().unwrap().len() == 0 {
@@ -6558,9 +6481,6 @@ pub fn correlation_dimension_unified_test(
     thread_id: usize,
     sample_idx: usize,
 ) -> f64 {
-    use std::fs::OpenOptions;
-    use std::io::Write;
-
     let idx = &stream.subsample;
     let pts = &stream.points_3d;
     let radii = &stream.corr_radii;
@@ -6596,6 +6516,12 @@ pub fn correlation_dimension_unified_test(
         }
     }
 
+    let filename = format!(
+        "corr_dim_debug_{}_{}.csv",
+        thread_id,
+        sample_idx,
+    );
+
     // Need smallest and largest radii to be nonzero
     if counts[0] == 0 || counts[r_count - 1] == 0 {
         // log the failure case too
@@ -6603,7 +6529,7 @@ pub fn correlation_dimension_unified_test(
             let mut file = OpenOptions::new()
                 .create(true)
                 .append(true)
-                .open("corr_dim_debug.csv")
+                .open(&filename)
                 .unwrap();
 
             if file.metadata().unwrap().len() == 0 {
@@ -6648,7 +6574,7 @@ pub fn correlation_dimension_unified_test(
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
-            .open("corr_dim_debug.csv")
+            .open(&filename)
             .unwrap();
 
         if file.metadata().unwrap().len() == 0 {
@@ -6779,13 +6705,16 @@ pub fn chaos_01_unified_test(stream: &mut BitByteStream, thread_id: usize, sampl
 
     // ---- LOGGING ----
     {
-        use std::fs::OpenOptions;
-        use std::io::Write;
+        let filename = format!(
+            "chaos_debug_{}_{}.csv",
+            thread_id,
+            sample_idx,
+        );
 
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
-            .open("chaos_debug.csv")
+            .open(&filename)
             .unwrap();
 
         // header only if empty
@@ -6947,10 +6876,16 @@ pub fn spectral_csd_test(
     // DEBUG LOGGING
     // -------------------------
     {
+        let filename = format!(
+            "spectral_csd_debug_{}_{}.csv",
+            thread_id,
+            sample_idx,
+        );
+
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
-            .open("spectral_csd_debug.csv")
+            .open(&filename)
             .unwrap();
 
         if file.metadata().unwrap().len() == 0 {
@@ -6997,9 +6932,6 @@ pub fn bicoherence_proxy_test(
     sample_idx: usize,
     segment_len: usize,
 ) -> f64 {
-    use std::fs::OpenOptions;
-    use std::io::Write;
-
     let bits = &stream.bits;
     if bits.len() < segment_len {
         return 0.0;
@@ -7083,10 +7015,17 @@ pub fn bicoherence_proxy_test(
     // DEBUG LOGGING
     // ------------------------------------------------------------
     {
+        let filename = format!(
+            "bicoherence_proxy_debug_{}_{}_{}.csv",
+            thread_id,
+            sample_idx,
+            segment_len,			
+        );
+
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
-            .open("bicoherence_proxy_debug.csv")
+            .open(&filename)
             .unwrap();
 
         if file.metadata().unwrap().len() == 0 {
@@ -7242,10 +7181,18 @@ pub fn polynomial_autocorr_fit_test(
     // DEBUG LOGGING
     // ------------------------------------------------------------
     {
+        let filename = format!(
+            "polynomial_autocorr_debug_{}_{}_{}_{}.csv",
+            thread_id,
+            sample_idx,
+            max_lag,
+			degree,
+        );
+
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
-            .open("polynomial_autocorr_debug.csv")
+            .open(&filename)
             .unwrap();
 
         if file.metadata().unwrap().len() == 0 {
@@ -7417,7 +7364,7 @@ pub fn parabolic_runlength_fit_test(
            + t0 * (s1 * s3 - s2 * s2)) / det;
 
     // ------------------------------------------------------------
-    // Compute R²
+    // Compute R^2
     // ------------------------------------------------------------
     let y_mean = Y.iter().sum::<f64>() / (nL as f64);
 
@@ -7448,10 +7395,16 @@ pub fn parabolic_runlength_fit_test(
     // DEBUG LOGGING
     // ------------------------------------------------------------
     {
+        let filename = format!(
+            "parabolic_runlength_debug_{}_{}.csv",
+            thread_id,
+            sample_idx,
+        );
+
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
-            .open("parabolic_runlength_debug.csv")
+            .open(&filename)
             .unwrap();
 
         if file.metadata().unwrap().len() == 0 {
@@ -7492,10 +7445,6 @@ pub fn parabolic_runlength_fit_test(
 
 // ================================================================
 //  Permutation Pattern Test (generalized OPERM, byte-based)
-//  - k-symbol permutations over consecutive bytes
-//  - Skips windows with ties
-//  - Chi-square vs uniform over k! permutations
-//  - Full debug logging
 // ================================================================
 pub fn permutation_pattern_unified_test(
     stream: &mut BitByteStream,
@@ -7503,9 +7452,6 @@ pub fn permutation_pattern_unified_test(
     sample_idx: usize,
     k: usize, // e.g., 4..6; 5 is OPERM5-like
 ) -> f64 {
-    use std::fs::OpenOptions;
-    use std::io::Write;
-
     let bytes = &stream.bytes;
     let n = bytes.len();
     if k < 3 || n < k * 10 {
@@ -7576,10 +7522,17 @@ pub fn permutation_pattern_unified_test(
     let p = sanitize_p(1.0 - chi_square_cdf(chi2, df));
 
     {
+        let filename = format!(
+            "permutation_pattern_debug_{}_{}_{}.csv",
+            thread_id,
+            sample_idx,
+			k,
+        );
+
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
-            .open("permutation_pattern_debug.csv")
+            .open(&filename)
             .unwrap();
 
         if file.metadata().unwrap().len() == 0 {
@@ -7670,14 +7623,74 @@ fn lehmer_index(ranks: &[usize]) -> usize {
     idx
 }
 
+pub fn run_calibrations(thread_id: usize, sample: usize, stream: &mut BitByteStream) {
+    permutation_pattern_unified_test(stream, thread_id, sample, 4);
+	permutation_pattern_unified_test(stream, thread_id, sample, 5);
+	permutation_pattern_unified_test(stream, thread_id, sample, 6);
+    
+	parabolic_runlength_fit_test(stream, thread_id, sample);
+	
+    polynomial_autocorr_fit_test(stream, thread_id, sample, 32, 1);
+	polynomial_autocorr_fit_test(stream, thread_id, sample, 32, 2);
+	polynomial_autocorr_fit_test(stream, thread_id, sample, 32, 3);
+	polynomial_autocorr_fit_test(stream, thread_id, sample, 32, 4);
+	
+	polynomial_autocorr_fit_test(stream, thread_id, sample, 64, 1);
+	polynomial_autocorr_fit_test(stream, thread_id, sample, 64, 2);
+	polynomial_autocorr_fit_test(stream, thread_id, sample, 64, 3);
+	polynomial_autocorr_fit_test(stream, thread_id, sample, 64, 4);
+	
+	polynomial_autocorr_fit_test(stream, thread_id, sample, 128, 1);
+	polynomial_autocorr_fit_test(stream, thread_id, sample, 128, 2);
+	polynomial_autocorr_fit_test(stream, thread_id, sample, 128, 3);
+	polynomial_autocorr_fit_test(stream, thread_id, sample, 128, 4);
+	
+	polynomial_autocorr_fit_test(stream, thread_id, sample, 256, 1);
+	polynomial_autocorr_fit_test(stream, thread_id, sample, 256, 2);
+	polynomial_autocorr_fit_test(stream, thread_id, sample, 256, 3);
+	polynomial_autocorr_fit_test(stream, thread_id, sample, 256, 4);
 
-
-
+    polynomial_autocorr_fit_test(stream, thread_id, sample, 512, 1);
+	polynomial_autocorr_fit_test(stream, thread_id, sample, 512, 2);
+	polynomial_autocorr_fit_test(stream, thread_id, sample, 512, 3);
+	polynomial_autocorr_fit_test(stream, thread_id, sample, 512, 4);
+	
+	polynomial_autocorr_fit_test(stream, thread_id, sample, 1024, 1);
+	polynomial_autocorr_fit_test(stream, thread_id, sample, 1024, 2);
+	polynomial_autocorr_fit_test(stream, thread_id, sample, 1024, 3);
+	polynomial_autocorr_fit_test(stream, thread_id, sample, 1024, 4);
+	
+	bicoherence_proxy_test(stream, thread_id, sample, 32);
+	bicoherence_proxy_test(stream, thread_id, sample, 64);
+	bicoherence_proxy_test(stream, thread_id, sample, 128);
+	bicoherence_proxy_test(stream, thread_id, sample, 256);
+	bicoherence_proxy_test(stream, thread_id, sample, 512);
+	bicoherence_proxy_test(stream, thread_id, sample, 1024);
+	
+	doublet_heavy_test(stream, thread_id, sample);
+	triplet_heavy_test(stream, thread_id, sample);
+	
+	predictability_test(stream, thread_id, sample, 4, 2);
+	predictability_test(stream, thread_id, sample, 4, 3);
+	predictability_test(stream, thread_id, sample, 4, 3);
+	
+	predictability_test(stream, thread_id, sample, 5, 2);
+	predictability_test(stream, thread_id, sample, 5, 3);
+	predictability_test(stream, thread_id, sample, 5, 3);
+	
+	predictability_test(stream, thread_id, sample, 6, 2);
+	predictability_test(stream, thread_id, sample, 6, 3);
+	predictability_test(stream, thread_id, sample, 6, 3);
+	
+	permutation_entropy_unified_test(stream, thread_id, sample);
+	kl_divergence_unified_test(stream, thread_id, sample);
+	gini_randomness_test(stream, thread_id, sample);
+}
 
 // ------------------------------------------------------------------
-// these are different kind of beast... not calibrating these
+// these are a different kind of beast... not calibrating these
 // just the stats tracker is not working for them....
-
+// ------------------------------------------------------------------
 
 // ----------------------------------------------------------------
 // NIST Random Excursion Test Validation
@@ -7812,6 +7825,7 @@ pub fn nist_random_excursions_variant_test(stream: &mut BitByteStream) -> Vec<Op
     results
 }
 
+/*
 // ----------------------------------------------------------------
 // NIST Random Excursion Variant Test
 // ----------------------------------------------------------------
@@ -8037,6 +8051,7 @@ pub fn run_tests(thread_id: usize, stream: &mut BitByteStream) -> bool {
     println!("returning from tests...");
     return true;
 }
+*/
 
 fn generate_random_bytes(len: usize) -> Vec<u8> {
     let mut rng = ChaCha20Rng::from_entropy();
@@ -8050,6 +8065,8 @@ fn main() {
 	for i in 0..1200 {
         let bytes = generate_random_bytes(131_072);  
         let mut stream = BitByteStream::new_from_bytes(bytes);
-	    println!("run_tests returned: {}", run_tests(0, &mut stream));
+	    //println!("run_tests returned: {}", run_tests(0, &mut stream));
+		run_calibrations(0, &mut stream);
+		println!("runing calibrations: {}", i);
 	}
 }
