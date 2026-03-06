@@ -2,7 +2,7 @@ use lazy_static::lazy_static;
 use std::collections::HashMap;
 use std::sync::Mutex;
 //use sha2::{Sha256};
-use rayon::prelude::*;
+//use rayon::prelude::*;
 //use std::sync::atomic::{AtomicBool, Ordering};
 use statrs::function::gamma;
 //use rustfft::num_complex::Complex;
@@ -10,7 +10,7 @@ use std::sync::LazyLock;
 //use serde::{Serialize, Deserialize};
 use once_cell::sync::Lazy;
 use rand::{RngCore, SeedableRng};
-use rand::prelude::*;
+//use rand::prelude::*;
 use rand_chacha::ChaCha20Rng;
 use core::f64::consts::PI;
 use std::fs::OpenOptions;
@@ -3155,76 +3155,68 @@ pub fn lz76_segment_similarity_test(
         return 1.0;
     }
 
+    // Compute complexities
     let mut comp = Vec::with_capacity(m);
     for seg in &segments {
         comp.push(lz76_complexity_bytes_sam(seg));
     }
 
-    let mut diffs = Vec::new();
-    for i in 0..m {
-        for j in (i + 1)..m {
-            diffs.push((comp[i] - comp[j]).abs());
-        }
+    // Z-normalize complexities
+    let mean_c: f64 = comp.iter().sum::<f64>() / (m as f64);
+    let var_c: f64 = comp.iter().map(|c| (c - mean_c).powi(2)).sum::<f64>() / (m as f64);
+    let sd_c = var_c.sqrt().max(1e-12);
+
+    let z: Vec<f64> = comp.iter().map(|c| (c - mean_c) / sd_c).collect();
+
+    // Adjacent differences
+    let mut diffs = Vec::with_capacity(m - 1);
+    for i in 0..(m - 1) {
+        diffs.push((z[i] - z[i + 1]).abs());
     }
 
-    if diffs.is_empty() {
-        return 1.0;
-    }
+    let n = diffs.len() as f64;
+    let mean_d = diffs.iter().sum::<f64>() / n;
 
-    let n_diffs = diffs.len() as f64;
-    let mean_diff: f64 = diffs.iter().sum::<f64>() / n_diffs;
-    let var_diff: f64 =
-        diffs.iter().map(|d| (d - mean_diff).powi(2)).sum::<f64>() / n_diffs;
+    // Folded-normal baseline for |Z1 - Z2|
+    let expected = (2.0 / std::f64::consts::PI).sqrt(); // ≈ 0.797884
+    let var = 1.0 - 2.0 / std::f64::consts::PI;          // ≈ 0.36338
 
-    let stat = if var_diff > 0.0 {
-        mean_diff / var_diff.sqrt()
-    } else {
-        0.0
-    };
-
+    let stat = (mean_d - expected) / (var / n).sqrt();
     let p = sanitize_p(2.0 * (1.0 - normal_cdf(stat.abs())));
 
-    // -------------------------
-    // LOGGING
-    // -------------------------
+    // Logging
     {
-        let filename = format!(
-            "lz76_segment_similarity_debug_{}_{}.csv",
-            thread_id,
-            sample_idx,
-        );
-
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&filename)
-            .unwrap();
+        let filename = format!("lz76_segment_similarity_debug_{}_{}.csv", thread_id, sample_idx);
+        let mut file = OpenOptions::new().create(true).append(true).open(&filename).unwrap();
 
         if file.metadata().unwrap().len() == 0 {
             writeln!(
                 file,
-                "thread_id,sample_idx,k,m,mean_diff,var_diff,stat,p_value,complexities,diffs"
+                "thread_id,sample_idx,k,m,mean_d,expected,var,stat,p_value,complexities,z_values,diffs"
             ).unwrap();
         }
 
         writeln!(
             file,
-            "{},{},{},{},{},{},{},{},{},{}",
+            "{},{},{},{},{},{},{},{},{},{},{},{}",
             thread_id,
             sample_idx,
             k,
             m,
-            mean_diff,
-            var_diff,
+            mean_d,
+            expected,
+            var,
             stat,
             p,
             comp.iter().map(|v| v.to_string()).collect::<Vec<_>>().join("|"),
+            z.iter().map(|v| v.to_string()).collect::<Vec<_>>().join("|"),
             diffs.iter().map(|v| v.to_string()).collect::<Vec<_>>().join("|")
         ).unwrap();
     }
 
     p
 }
+
 
 /*
 // ================================================================
@@ -3302,58 +3294,16 @@ pub fn lz76_complexity_test(
     let n = stream.byte_len;
     let data = &stream.bytes;
 
-    let mut factors = 0usize;
-    let mut i = 0usize;
-
-    // Optional debug: record first few factor lengths
-    let mut debug_factor_lens: Vec<usize> = Vec::new();
-
-    while i < n {
-        let mut length = 1usize;
-        let mut best = 1usize;
-
-        // Try to extend the match
-        while i + length <= n {
-            let mut found = false;
-
-            // Search for data[i..i+length] in data[0..i]
-            for j in 0..=i.saturating_sub(length) {
-                if &data[j..j + length] == &data[i..i + length] {
-                    found = true;
-                    break;
-                }
-            }
-
-            if found {
-                best = length;
-                length += 1;
-            } else {
-                break;
-            }
-        }
-
-        if debug_factor_lens.len() < 32 {
-            debug_factor_lens.push(best);
-        }
-
-        factors += 1;
-        i += best;
-    }
-
-    let c_n = factors as f64;
+    // --- Use the SAM-based LZ76 complexity ---
+    let c_n = lz76_complexity_bytes_sam(data);
     let n_f = n as f64;
 
     if n_f <= 1.0 {
         return 0.0;
     }
 
-    let log2_n = n_f.log2();
-    let expected = n_f / log2_n;
+    let expected = n_f / n_f.log2();
     let variance = expected;
-
-    if variance <= 0.0 {
-        return 0.0;
-    }
 
     let z = (c_n - expected) / variance.sqrt();
     let p = sanitize_p(2.0 * (1.0 - normal_cdf(z.abs())));
@@ -3367,7 +3317,7 @@ pub fn lz76_complexity_test(
             thread_id,
             sample_idx,
         );
-		
+
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
@@ -3377,27 +3327,21 @@ pub fn lz76_complexity_test(
         if file.metadata().unwrap().len() == 0 {
             writeln!(
                 file,
-                "thread_id,sample_idx,n,factors,c_n,expected,variance,z,p_value,factor_lengths"
+                "thread_id,sample_idx,n,c_n,expected,variance,z,p_value"
             ).unwrap();
         }
 
         writeln!(
             file,
-            "{},{},{},{},{},{},{},{},{},{}",
+            "{},{},{},{},{},{},{},{}",
             thread_id,
             sample_idx,
             n,
-            factors,
             c_n,
             expected,
             variance,
             z,
-            p,
-            debug_factor_lens
-                .iter()
-                .map(|v| v.to_string())
-                .collect::<Vec<_>>()
-                .join("|")
+            p
         ).unwrap();
     }
 
@@ -3658,9 +3602,9 @@ pub fn sprt_drift_unified_test(stream: &mut BitByteStream) -> f64 {
 */
 
 // ================================================================
-//  SPRT Drift Detector — with debug logging
+//  SPRT Global Drift Test — with debug logging
 // ================================================================
-pub fn sprt_drift_unified_test(
+pub fn sprt_drift_global_test(
     stream: &mut BitByteStream,
     thread_id: usize,
     sample_idx: usize
@@ -3670,7 +3614,77 @@ pub fn sprt_drift_unified_test(
 
     let bits = &stream.bits;
     let n = bits.len();
-    let use_windows = stream.sprt_use_windows;
+    let scale = stream.sprt_scale;
+
+    let log_p0 = (0.5f64).ln();
+
+    let filename = format!(
+        "sprt_drift_debug_{}_{}.csv",
+        thread_id,
+        sample_idx,
+    );
+
+    let count_1 = bits.iter().filter(|&&b| b == 1).count();
+    let p_hat = (count_1 as f64) / (n as f64);
+
+    if p_hat <= 0.0 || p_hat >= 1.0 {
+        return 0.0;
+    }
+
+    let mut llr = 0.0;
+    for &b in bits {
+        let p1 = if b == 1 { p_hat } else { 1.0 - p_hat };
+        llr += p1.ln() - log_p0;
+    }
+
+    let stat = llr.abs() / (n as f64).sqrt() * scale;
+    let p = (2.0 * (1.0 - normal_cdf(stat))).clamp(0.0, 1.0);
+
+    // ---- LOGGING ----
+    {
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&filename)
+            .unwrap();
+
+        if file.metadata().unwrap().len() == 0 {
+            writeln!(
+                file,
+                "thread_id,sample_idx,mode,n,p_hat,llr,stat,p_value"
+            ).unwrap();
+        }
+
+        writeln!(
+            file,
+            "{},{},{},{},{},{},{},{}",
+            thread_id,
+            sample_idx,
+            "global",
+            n,
+            p_hat,
+            llr,
+            stat,
+            p
+        ).unwrap();
+    }
+
+    p
+}
+
+// ================================================================
+//  SPRT Sliding-Window Drift Test — with debug logging
+// ================================================================
+pub fn sprt_drift_window_test(
+    stream: &mut BitByteStream,
+    thread_id: usize,
+    sample_idx: usize
+) -> f64 {
+    use std::fs::OpenOptions;
+    use std::io::Write;
+
+    let bits = &stream.bits;
+    let n = bits.len();
     let window_size = stream.sprt_window_size;
     let step = stream.sprt_step;
     let scale = stream.sprt_scale;
@@ -3683,61 +3697,6 @@ pub fn sprt_drift_unified_test(
         sample_idx,
     );
 
-    // ============================================================
-    // GLOBAL MODE
-    // ============================================================
-    if !use_windows {
-        let count_1 = bits.iter().filter(|&&b| b == 1).count();
-        let p_hat = (count_1 as f64) / (n as f64);
-
-        if p_hat <= 0.0 || p_hat >= 1.0 {
-            return 0.0;
-        }
-
-        let mut llr = 0.0;
-        for &b in bits {
-            let p1 = if b == 1 { p_hat } else { 1.0 - p_hat };
-            llr += p1.ln() - log_p0;
-        }
-
-        let stat = llr.abs() / (n as f64).sqrt() * scale;
-        let p = (2.0 * (1.0 - normal_cdf(stat))).clamp(0.0, 1.0);
-
-        // ---- LOGGING ----
-        {
-            let mut file = OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&filename)
-                .unwrap();
-
-            if file.metadata().unwrap().len() == 0 {
-                writeln!(
-                    file,
-                    "thread_id,sample_idx,mode,n,p_hat,llr,stat,p_value"
-                ).unwrap();
-            }
-
-            writeln!(
-                file,
-                "{},{},{},{},{},{},{},{}",
-                thread_id,
-                sample_idx,
-                "global",
-                n,
-                p_hat,
-                llr,
-                stat,
-                p
-            ).unwrap();
-        }
-
-        return p;
-    }
-
-    // ============================================================
-    // SLIDING-WINDOW MODE
-    // ============================================================
     if n < window_size {
         return 0.0;
     }
@@ -3927,7 +3886,10 @@ pub fn martingale_betting_unified_test(
 
     let log_up = (1.0 + f).ln();
     let log_down = (1.0 - f).ln();
-    let sigma_step2 = 0.5 * (log_up * log_up + log_down * log_down);
+
+    // --- correct mean and variance per step for a fair bit ---
+    let mu_step = 0.5 * (log_up + log_down);
+    let sigma_step2 = 0.5 * ((log_up - mu_step).powi(2) + (log_down - mu_step).powi(2));
     if sigma_step2 <= 0.0 {
         return 0.5;
     }
@@ -3976,12 +3938,13 @@ pub fn martingale_betting_unified_test(
         return 0.5;
     }
 
-    // Compute Z-scores
+    // --- compute Z-scores with centering ---
     let mut z_values = Vec::with_capacity(strategy_count);
     let mut z_max = 0.0;
 
     for &lw in &log_wealths {
-        let z = lw / (sigma_step * steps.sqrt());
+        let lw_centered = lw - mu_step * steps;
+        let z = lw_centered / (sigma_step * steps.sqrt());
         let za = z.abs();
         if za > z_max {
             z_max = za;
@@ -3994,9 +3957,7 @@ pub fn martingale_betting_unified_test(
     let p_combined = 1.0 - (1.0 - p_single).powf(k);
     let p = sanitize_p(p_combined);
 
-    // -------------------------
-    // LOGGING
-    // -------------------------
+    // logging unchanged, but now logs centered z-values
     {
         let filename = format!(
             "martingale_debug_{}_{}.csv",
@@ -4086,19 +4047,22 @@ pub fn wasserstein_drift_unified_test(stream: &mut BitByteStream) -> f64 {
 }
 */
 
-// ================================================================
+// ======================================================================
 //  Wasserstein Drift Test (W1 distance between adjacent segments)
-//  — with debug logging
-// ================================================================
+//  Updated for calibration stability and statistical correctness
+// ======================================================================
 pub fn wasserstein_drift_unified_test(
     stream: &mut BitByteStream,
     thread_id: usize,
     sample_idx: usize
 ) -> f64 {
+    use std::fs::OpenOptions;
+    use std::io::Write;
+
     let n = stream.byte_len;
     let k = stream.wasserstein_k;
-    let expected_var = stream.wasserstein_expected_var;
-    let scale = stream.wasserstein_scale;
+    let expected_mean = 80.0;
+    let expected_std  = 0.25;
 
     let seg_len = n / k;
     if seg_len < 128 {
@@ -4126,15 +4090,30 @@ pub fn wasserstein_drift_unified_test(
         return 0.0;
     }
 
+    // Mean and variance of observed distances
     let mean = distances.iter().sum::<f64>() / m;
-    let var = distances.iter().map(|&d| (d - mean).powi(2)).sum::<f64>() / m;
+    let var  = distances.iter().map(|&d| (d - mean).powi(2)).sum::<f64>() / m;
 
-    let deviation = (var - expected_var).abs();
-    let stat = deviation * m.sqrt() * scale;
+    // ------------------------------------------------------------------
+    // NEW STATISTIC:
+    //   stat = |mean - expected_mean| / (expected_std / sqrt(m))
+    // This is a standard z-score for drift detection.
+    // ------------------------------------------------------------------
+    let stat = if expected_std > 0.0 {
+        let denom = expected_std / m.sqrt();
+        if denom > 0.0 {
+            ((mean - expected_mean).abs()) / denom
+        } else {
+            0.0
+        }
+    } else {
+        0.0
+    };
+
     let p = sanitize_p(2.0 * (1.0 - normal_cdf(stat)));
 
     // -------------------------
-    // LOGGING
+    // LOGGING (unchanged format)
     // -------------------------
     {
         let filename = format!(
@@ -4147,28 +4126,27 @@ pub fn wasserstein_drift_unified_test(
             .create(true)
             .append(true)
             .open(&filename)
-			.unwrap();
+            .unwrap();
 
         if file.metadata().unwrap().len() == 0 {
             writeln!(
                 file,
-                "thread_id,sample_idx,n,k,seg_len,expected_var,scale,mean,var,deviation,stat,p_value,distances",
+                "thread_id,sample_idx,n,k,seg_len,expected_mean,expected_std,mean,var,stat,p_value,distances",
             ).unwrap();
         }
 
         writeln!(
             file,
-            "{},{},{},{},{},{},{},{},{},{},{},{},{}",
+            "{},{},{},{},{},{},{},{},{},{},{},{}",
             thread_id,
             sample_idx,
             n,
             k,
             seg_len,
-            expected_var,
-            scale,
+            expected_mean,
+            expected_std,
             mean,
             var,
-            deviation,
             stat,
             p,
             distances.iter().map(|v| v.to_string()).collect::<Vec<_>>().join("|")
@@ -4177,6 +4155,7 @@ pub fn wasserstein_drift_unified_test(
 
     p
 }
+
 
 /*
 // ================================================================
@@ -5159,7 +5138,10 @@ pub fn ncd_test(
     }
 
     let mean_ncd = ncd_values.iter().sum::<f64>() / (m as f64);
-    let stat = (mean_ncd - 1.0) * (m as f64).sqrt();
+    let expected = 0.85;
+    let sigma = 0.0019;
+    let stat = (mean_ncd - expected) / (sigma / (m as f64).sqrt());
+
     let p = sanitize_p(2.0 * (1.0 - normal_cdf(stat.abs())));
 
     // -------------------------
@@ -5255,7 +5237,7 @@ pub fn gini_randomness_test(
     }
 
     // ---- Sort counts (not probabilities) ----
-    let mut sorted: Vec<u64> = counts.to_vec();
+    let mut sorted: Vec<usize> = counts.to_vec();
     sorted.sort_unstable();
 
     let k = 256.0;
@@ -5446,7 +5428,7 @@ pub fn kl_divergence_byte_histogram_test(
         ).unwrap();
     }
 
-    p;
+    p
 }
 
 // ================================================================
@@ -5466,9 +5448,6 @@ pub fn kl_divergence_matrix_test(
         sample_idx,
     );
 
-    // ---------------------------------------------------------
-    // 1‑ORDER KL: TRANSITION MATRIX
-    // ---------------------------------------------------------
     let transitions = match &stream.transition_matrix {
         Some(t) => t,
         None => {
@@ -5528,7 +5507,7 @@ pub fn kl_divergence_matrix_test(
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
-            .open("kl_divergence_debug.csv")
+            .open(&filename)
             .unwrap();
 
         if file.metadata().unwrap().len() == 0 {
@@ -5749,19 +5728,21 @@ pub fn permutation_entropy_unified_test(stream: &mut BitByteStream) -> f64 {
 */
 
 // ================================================================
-//  Permutation Entropy with logging
+//  Permutation Entropy with logging — patched for calibration
 // ================================================================
 pub fn permutation_entropy_unified_test(
     stream: &mut BitByteStream,
     thread_id: usize,
     sample_idx: usize,
 ) -> f64 {
+    use std::collections::HashMap;
+    use std::fs::OpenOptions;
+    use std::io::Write;
+
     let n = stream.byte_len;
     let bytes = &stream.bytes;
     let d = stream.perm_d;
     let min_n = stream.perm_min_n;
-    let expected = stream.perm_expected;
-    let scale = stream.perm_scale;
 
     if n < min_n {
         return 0.0;
@@ -5772,11 +5753,10 @@ pub fn permutation_entropy_unified_test(
     let mut counts: HashMap<Vec<u8>, usize> = HashMap::new();
 
     for i in 0..n.saturating_sub(d - 1) {
-        let mut window: Vec<(u8, u8)> = (0..d)
-            .map(|j| (bytes[i + j], j as u8))
-            .collect();
-
-        window.sort_by_key(|k| k.0);
+        let mut window: Vec<(u8, u8)> =
+            (0..d).map(|j| (bytes[i + j], j as u8)).collect();
+        
+        window.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
 
         let perm: Vec<u8> = window.iter().map(|x| x.1).collect();
         *counts.entry(perm).or_insert(0) += 1;
@@ -5792,23 +5772,15 @@ pub fn permutation_entropy_unified_test(
 
     let h_max = bins.ln();
     let h_norm = h / h_max;
+    let expected = 1.0 - 1.0 / (2.0 * m);
     let deviation = (h_norm - expected).abs();
-    let stat = deviation * m.sqrt() * scale;
-    let p = sanitize_p(2.0 * (1.0 - normal_cdf(stat)));
+    let stat = deviation * m.sqrt();
+    let p = sanitize_p(1.0 - normal_cdf(stat));
 
-    // ---- LOGGING ----
+    // Logging
     {
-        let filename = format!(
-            "perm_entropy_debug_{}_{}.csv",
-            thread_id,
-            sample_idx,
-        );
-
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&filename)
-            .unwrap();
+        let filename = format!("perm_entropy_debug_{}_{}.csv", thread_id, sample_idx);
+        let mut file = OpenOptions::new().create(true).append(true).open(&filename).unwrap();
 
         if file.metadata().unwrap().len() == 0 {
             writeln!(
@@ -5840,6 +5812,7 @@ pub fn permutation_entropy_unified_test(
 
     p
 }
+
 
 // ================================================================
 //  Predictability Test (Kolmogorov–Arnold Proxy, debug-enabled)
@@ -6132,7 +6105,7 @@ pub fn triplet_heavy_test(
     let mut freq: Vec<(usize, u32)> = counts
         .iter()
         .enumerate()
-        .filter(|(_, &c)| c > 0)
+        .filter(|&(_, &c)| c > 0)
         .map(|(i, &c)| (i, c))
         .collect();
 
@@ -6311,6 +6284,7 @@ pub fn doublet_heavy_test(
             .iter()
             .enumerate()
             .filter(|&(_, c)| *c > 0)
+            .map(|(i, &c)| (i, c))   // <-- FIX: dereference here
             .collect();
 
         pairs.sort_unstable_by(|a, b| b.1.cmp(&a.1));
@@ -8267,7 +8241,8 @@ pub fn run_calibrations(thread_id: usize, sample: usize, stream: &mut BitByteStr
 	segment_clustering_scaling_test(stream, thread_id, sample);
 	wasserstein_drift_unified_test(stream, thread_id, sample);
 	martingale_betting_unified_test(stream, thread_id, sample);
-	sprt_drift_unified_test(stream, thread_id, sample);
+	sprt_drift_global_test(stream, thread_id, sample);
+	sprt_drift_window_test(stream, thread_id, sample);
 	snapshot_distance_matrix_unified_test(stream, thread_id, sample);
 	lz76_complexity_test(stream, thread_id, sample);
 	lz76_segment_similarity_test(stream, thread_id, sample);
