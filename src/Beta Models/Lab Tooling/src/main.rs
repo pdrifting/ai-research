@@ -2507,33 +2507,18 @@ pub fn cusum_reverse_test(stream: &mut BitByteStream) -> f64 {
     cusum_core(zrev, n)
 }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+// ------------------------------------------------------------------------------------------------------
+// ------------------------------------------------------------------------------------------------------
+// ------------------------------------------------------------------------------------------------------
+// ------------------------------------------------------------------------------------------------------
+// ------------------------------------------------------------------------------------------------------
+// ------------------------------------------------------------------------------------------------------
+// CALIBRATION FUNCTIONS FOLLOW!!!!!!!!!!!!!!!!!!!!!!!
+// ------------------------------------------------------------------------------------------------------
+// ------------------------------------------------------------------------------------------------------
+// ------------------------------------------------------------------------------------------------------
+// ------------------------------------------------------------------------------------------------------
+// ------------------------------------------------------------------------------------------------------
 // ------------------------------------------------------------------------------------------------------
 
 // ================================================================
@@ -2669,13 +2654,19 @@ fn log_quadratic_panel(
     debug_syms: &[String],
     mode: &str,
 ) {
-    use std::fs::OpenOptions;
-    use std::io::Write;
-
-    let mut file = OpenOptions::new()
+    let filename = format!(
+        "quadratic_character_multi_debug_{}_{}_{}_{}_{}.csv",
+        thread_id,
+        sample_idx,
+		panel_idx,
+		prime,		
+		word_size,
+    );
+	
+	let mut file = OpenOptions::new()
         .create(true)
         .append(true)
-        .open("quadratic_character_multi_debug.csv")
+        .open(&filename)
         .unwrap();
 
     if file.metadata().unwrap().len() == 0 {
@@ -2734,12 +2725,6 @@ fn modexp_u32(mut a: u32, mut e: u32, m: u32) -> u32 {
 
     r as u32
 }
-
-let panels = [
-    (257, 1),          // byte-level
-    (65537, 2),        // 16-bit words
-    (4294967291, 4),   // 32-bit words
-];
 
 /*
 let pvals = quadratic_character_multi_panel_test(
@@ -2801,9 +2786,6 @@ pub fn maurer_universal_byte_test(
     thread_id: usize,
     sample_idx: usize
 ) -> f64 {
-    use std::fs::OpenOptions;
-    use std::io::Write;
-
     let n = stream.byte_len;
     let q = 2560;
     let mut last_seen = [0usize; 256];
@@ -2863,6 +2845,12 @@ pub fn maurer_universal_byte_test(
     // LOGGING
     // -------------------------
     {
+        let filename = format!(
+            "lz76_segment_similarity_debug_{}_{}.csv",
+            thread_id,
+            sample_idx,
+        );
+
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
@@ -3107,9 +3095,6 @@ pub fn lz76_segment_similarity_test(
     thread_id: usize,
     sample_idx: usize
 ) -> f64 {
-    use std::fs::OpenOptions;
-    use std::io::Write;
-
     let k = 8;
     let segments = segment_stream_bytes(stream, k);
     let m = segments.len();
@@ -3150,10 +3135,16 @@ pub fn lz76_segment_similarity_test(
     // LOGGING
     // -------------------------
     {
+        let filename = format!(
+            "lz76_segment_similarity_debug_{}_{}.csv",
+            thread_id,
+            sample_idx,
+        );
+
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
-            .open("lz76_segment_similarity_debug.csv")
+            .open(&filename)
             .unwrap();
 
         if file.metadata().unwrap().len() == 0 {
@@ -3318,10 +3309,16 @@ pub fn lz76_complexity_test(
     // DEBUG LOGGING
     // -------------------------
     {
+        let filename = format!(
+            "lz76_complexity_debug_{}_{}.csv",
+            thread_id,
+            sample_idx,
+        );
+		
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
-            .open("lz76_complexity_debug.csv")
+            .open(&filename)
             .unwrap();
 
         if file.metadata().unwrap().len() == 0 {
@@ -3424,9 +3421,6 @@ pub fn snapshot_distance_matrix_unified_test(
     thread_id: usize,
     sample_idx: usize
 ) -> f64 {
-    use std::fs::OpenOptions;
-    use std::io::Write;
-
     let n = stream.byte_len;
     let k = stream.snap_k;
     let expected_var = stream.snap_expected_var;
@@ -3501,10 +3495,16 @@ pub fn snapshot_distance_matrix_unified_test(
     // LOGGING
     // -------------------------
     {
+        let filename = format!(
+            "snapshot_distance_matrix_debug_{}_{}.csv",
+            thread_id,
+            sample_idx,
+        );
+
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
-            .open("snapshot_distance_matrix_debug.csv")
+            .open(&filename)
             .unwrap();
 
         if file.metadata().unwrap().len() == 0 {
@@ -3624,6 +3624,12 @@ pub fn sprt_drift_unified_test(
 
     let log_p0 = (0.5f64).ln();
 
+    let filename = format!(
+        "sprt_drift_debug_{}_{}.csv",
+        thread_id,
+        sample_idx,
+    );
+
     // ============================================================
     // GLOBAL MODE
     // ============================================================
@@ -3649,7 +3655,7 @@ pub fn sprt_drift_unified_test(
             let mut file = OpenOptions::new()
                 .create(true)
                 .append(true)
-                .open("sprt_drift_debug.csv")
+                .open(&filename)
                 .unwrap();
 
             if file.metadata().unwrap().len() == 0 {
@@ -3697,7 +3703,7 @@ pub fn sprt_drift_unified_test(
                 let mut file = OpenOptions::new()
                     .create(true)
                     .append(true)
-                    .open("sprt_drift_debug.csv")
+                    .open(&filename)
                     .unwrap();
 
                 if file.metadata().unwrap().len() == 0 {
@@ -3746,7 +3752,7 @@ pub fn sprt_drift_unified_test(
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
-            .open("sprt_drift_debug.csv")
+            .open(&filename)
             .unwrap();
 
         if file.metadata().unwrap().len() == 0 {
@@ -3859,9 +3865,6 @@ pub fn martingale_betting_unified_test(
     thread_id: usize,
     sample_idx: usize
 ) -> f64 {
-    use std::fs::OpenOptions;
-    use std::io::Write;
-
     let bits = &stream.bits;
     let n = bits.len();
     let f = stream.martingale_f;
@@ -3942,6 +3945,12 @@ pub fn martingale_betting_unified_test(
     // LOGGING
     // -------------------------
     {
+        let filename = format!(
+            "martingale_debug_{}_{}.csv",
+            thread_id,
+            sample_idx,
+        );
+
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
@@ -4033,9 +4042,6 @@ pub fn wasserstein_drift_unified_test(
     thread_id: usize,
     sample_idx: usize
 ) -> f64 {
-    use std::fs::OpenOptions;
-    use std::io::Write;
-
     let n = stream.byte_len;
     let k = stream.wasserstein_k;
     let expected_var = stream.wasserstein_expected_var;
@@ -4078,11 +4084,16 @@ pub fn wasserstein_drift_unified_test(
     // LOGGING
     // -------------------------
     {
+        let filename = format!(
+            "wasserstein_drift_debug_{}_{}.csv",
+            thread_id,
+            sample_idx,
+        );
+
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
-            .open("wasserstein_drift_debug.csv")
-            .unwrap();
+            .open(&filename);
 
         if file.metadata().unwrap().len() == 0 {
             writeln!(
@@ -4216,9 +4227,6 @@ pub fn segment_clustering_scaling_test(
     thread_id: usize,
     sample_idx: usize
 ) -> f64 {
-    use std::fs::OpenOptions;
-    use std::io::Write;
-
     let n = stream.byte_len;
     let k = stream.cluster_k;
     let iters = stream.cluster_iters;
@@ -4269,6 +4277,12 @@ pub fn segment_clustering_scaling_test(
     let mut c2 = features[k - 1].clone();
     let mut assign = vec![0usize; k];
 
+    let filename = format!(
+        "segment_clustering_debug_{}_{}.csv",
+        thread_id,
+        sample_idx,
+    );
+
     for _ in 0..iters {
         for i in 0..k {
             let d1 = euclidean_distance(&features[i], &c1);
@@ -4293,7 +4307,7 @@ pub fn segment_clustering_scaling_test(
                 let mut file = OpenOptions::new()
                     .create(true)
                     .append(true)
-                    .open("segment_clustering_debug.csv")
+                    .open(&filename)
                     .unwrap();
 
                 if file.metadata().unwrap().len() == 0 {
@@ -4347,10 +4361,11 @@ pub fn segment_clustering_scaling_test(
     // LOGGING
     // -------------------------
     {
+
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
-            .open("segment_clustering_debug.csv")
+            .open(&filename)
             .unwrap();
 
         if file.metadata().unwrap().len() == 0 {
@@ -4379,123 +4394,6 @@ pub fn segment_clustering_scaling_test(
             assign.iter().map(|v| v.to_string()).collect::<Vec<_>>().join("|"),
             entropies.iter().map(|v| v.to_string()).collect::<Vec<_>>().join("|"),
             complexities.iter().map(|v| v.to_string()).collect::<Vec<_>>().join("|")
-        ).unwrap();
-    }
-
-    p
-}
-
-// ================================================================
-//  Delay-Embedding Correlation Test (D2, subsampled) — debug logging
-// ================================================================
-pub fn d2_correlation_test(
-    stream: &mut BitByteStream,
-    thread_id: usize,
-    sample_idx: usize
-) -> f64 {
-    use std::fs::OpenOptions;
-    use std::io::Write;
-
-    let data = &stream.bytes;
-    let n = data.len();
-    let tau = 1usize;
-
-    // Build 3D vectors
-    let mut pts = Vec::with_capacity(n - 2 * tau);
-    for i in 0..(n - 2 * tau) {
-        pts.push([
-            data[i] as f64,
-            data[i + tau] as f64,
-            data[i + 2 * tau] as f64,
-        ]);
-    }
-
-    let m = pts.len();
-    if m < 500 {
-        return 0.5;
-    }
-
-    // Subsampled correlation integral
-    let sample_size = m.min(4096);
-    let neighbors_per = 64usize;
-    let r = 20.0;
-    let r2 = r * r;
-
-    let mut hits = 0u64;
-    let mut trials = 0u64;
-
-    let step = (m / neighbors_per.max(1)).max(1);
-    let stride = (m / sample_size.max(1)).max(1);
-
-    for i in (0..m).step_by(stride) {
-        let a = pts[i];
-        let mut j = (i + step) % m;
-        for _ in 0..neighbors_per {
-            let b = pts[j];
-            let dx = a[0] - b[0];
-            let dy = a[1] - b[1];
-            let dz = a[2] - b[2];
-            if dx * dx + dy * dy + dz * dz < r2 {
-                hits += 1;
-            }
-            trials += 1;
-            j = (j + step) % m;
-        }
-    }
-
-    if trials == 0 {
-        return 0.5;
-    }
-
-    let d2 = hits as f64 / trials as f64;
-
-    // Expected for white noise: volume of 3D ball of radius r in cube [0,255]^3
-    let cube: f64 = 255.0;
-    let expected = (4.0 / 3.0) * std::f64::consts::PI * r.powi(3) / cube.powi(3);
-
-    let variance = expected * (1.0 - expected) / (trials as f64);
-    if variance <= 0.0 {
-        return 0.5;
-    }
-
-    let z = (d2 - expected) / variance.sqrt();
-    let p = sanitize_p(2.0 * (1.0 - normal_cdf(z.abs())));
-
-    // -------------------------
-    // LOGGING
-    // -------------------------
-    {
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open("d2_correlation_debug.csv")
-            .unwrap();
-
-        if file.metadata().unwrap().len() == 0 {
-            writeln!(
-                file,
-                "thread_id,sample_idx,n,m,sample_size,neighbors_per,r,r2,hits,trials,d2,expected,variance,z,p_value"
-            ).unwrap();
-        }
-
-        writeln!(
-            file,
-            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
-            thread_id,
-            sample_idx,
-            n,
-            m,
-            sample_size,
-            neighbors_per,
-            r,
-            r2,
-            hits,
-            trials,
-            d2,
-            expected,
-            variance,
-            z,
-            p
         ).unwrap();
     }
 
@@ -4581,9 +4479,6 @@ pub fn d2_correlation_test(
     thread_id: usize,
     sample_idx: usize
 ) -> f64 {
-    use std::fs::OpenOptions;
-    use std::io::Write;
-
     let data = &stream.bytes;
     let n = data.len();
     let tau = 1usize;
@@ -4653,10 +4548,16 @@ pub fn d2_correlation_test(
     // LOGGING
     // -------------------------
     {
+        let filename = format!(
+            "d2_correlation_debug_{}_{}.csv",
+            thread_id,
+            sample_idx,
+        );
+
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
-            .open("d2_correlation_debug.csv")
+            .open(&filename)
             .unwrap();
 
         if file.metadata().unwrap().len() == 0 {
@@ -4757,13 +4658,19 @@ pub fn sample_entropy_unified_test(
     let b = count_matches(&x[..limit], m, r);
     let a = count_matches(&x[..limit], m + 1, r);
 
+    let filename = format!(
+        "sampen_debug_{}_{}.csv",
+        thread_id,
+        sample_idx,
+    );
+
     if b == 0 || a == 0 {
         // log degenerate case
         {
             let mut file = OpenOptions::new()
                 .create(true)
                 .append(true)
-                .open("sampen_debug.csv")
+                .open(&filename)
                 .unwrap();
 
             if file.metadata().unwrap().len() == 0 {
@@ -4808,7 +4715,7 @@ pub fn sample_entropy_unified_test(
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
-            .open("sampen_debug.csv")
+            .open(&filename)
             .unwrap();
 
         if file.metadata().unwrap().len() == 0 {
@@ -4886,9 +4793,6 @@ pub fn star_discrepancy_unified_test(
     thread_id: usize,
     sample_idx: usize
 ) -> f64 {
-    use std::fs::OpenOptions;
-    use std::io::Write;
-
     let m = stream.points_len as f64;
     if m == 0.0 {
         return 0.0;
@@ -4935,10 +4839,16 @@ pub fn star_discrepancy_unified_test(
     // LOGGING
     // -------------------------
     {
+        let filename = format!(
+            "star_discrepancy_debug_{}_{}.csv",
+            thread_id,
+            sample_idx,
+        );
+
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
-            .open("star_discrepancy_debug.csv")
+            .open(&filename)
             .unwrap();
 
         if file.metadata().unwrap().len() == 0 {
@@ -5097,13 +5007,16 @@ pub fn entropy_stability_unified_test(
     thread_id: usize,
     sample_idx: usize
 ) -> f64 {
-    use std::fs::OpenOptions;
-    use std::io::Write;
-
     let n = stream.byte_len;
     let bytes = &stream.bytes;
     let scale = stream.entropy_scale;
 
+    let filename = format!(
+        "entropy_stability_debug_{}_{}.csv",
+        thread_id,
+        sample_idx,
+    );
+        
     match stream.entropy_mode {
         EntropyMode::Global => {
             let scales = vec![n / 8, n / 4, n / 2, n];
@@ -5131,7 +5044,7 @@ pub fn entropy_stability_unified_test(
                 let mut file = OpenOptions::new()
                     .create(true)
                     .append(true)
-                    .open("entropy_stability_debug.csv")
+                    .open(&filename)
                     .unwrap();
 
                 if file.metadata().unwrap().len() == 0 {
@@ -5216,7 +5129,7 @@ pub fn entropy_stability_unified_test(
                 let mut file = OpenOptions::new()
                     .create(true)
                     .append(true)
-                    .open("entropy_stability_debug.csv")
+                    .open(&filename)
                     .unwrap();
 
                 if file.metadata().unwrap().len() == 0 {
@@ -5308,14 +5221,7 @@ pub fn ncd_test(
     thread_id: usize,
     sample_idx: usize
 ) -> f64 {
-    use std::fs::OpenOptions;
-    use std::io::Write;
-
     let n = stream.byte_len;
-    if n == 0 {
-        return 0.0;
-    }
-
     let k = 8;
     let segments = segment_stream_bytes(stream, k);
     if segments.len() < 2 {
@@ -5367,10 +5273,16 @@ pub fn ncd_test(
     // LOGGING
     // -------------------------
     {
+        let filename = format!(
+            "ncd_debug_{}_{}.csv",
+            thread_id,
+            sample_idx,
+        );
+
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
-            .open("ncd_debug.csv")
+            .open(&filename)
             .unwrap();
 
         if file.metadata().unwrap().len() == 0 {
@@ -5477,10 +5389,16 @@ pub fn gini_randomness_test(
     // LOGGING
     // -------------------------
     {
+        let filename = format!(
+            "gini_debug_{}_{}.csv",
+            thread_id,
+            sample_idx,
+        );
+
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
-            .open("gini_debug.csv")
+            .open(&filename)
             .unwrap();
 
         if file.metadata().unwrap().len() == 0 {
@@ -7007,7 +6925,7 @@ pub fn bicoherence_proxy_test(
     // ------------------------------------------------------------
     let p = {
         let clipped = bico.min(1.0).max(0.0);
-        let pv = 0.5 * (1.0 - clipped);
+        let pv: f64 = 0.5 * (1.0 - clipped);
         pv.min(0.5).max(0.0)
     };
 
@@ -7623,6 +7541,629 @@ fn lehmer_index(ranks: &[usize]) -> usize {
     idx
 }
 
+// ================================================================
+//  Ripley K/L-Function Test (2D)
+//  - Points in [0,1]^2 from RNG
+//  - Estimates K(r) over multiple radii
+//  - Uses L(r) = sqrt(K(r)/π) - r; Poisson → L(r) ≈ 0
+//  - Statistic: max |L(r)| over r-grid
+//  - Heuristic p-mapping, full debug for calibration
+// ================================================================
+pub fn ripley_k_unified_test(
+    stream: &mut BitByteStream,
+    thread_id: usize,
+    sample_idx: usize,
+    n_points: usize,   // e.g., 256–1024
+    n_radii: usize,    // e.g., 16–32
+    r_max: f64,        // e.g., 0.25
+) -> f64 {
+    let bytes = &stream.bytes;
+    let needed = n_points * 8;
+    if bytes.len() < needed || n_points < 32 || n_radii < 4 || r_max <= 0.0 {
+        return 0.0;
+    }
+
+    // ------------------------------------------------------------
+    // Map bytes → points in [0,1]^2
+    // ------------------------------------------------------------
+    let mut idx = 0usize;
+    let mut pts: Vec<(f64, f64)> = Vec::with_capacity(n_points);
+    for _ in 0..n_points {
+        let x_raw = ((bytes[idx] as u32) << 24)
+            | ((bytes[idx + 1] as u32) << 16)
+            | ((bytes[idx + 2] as u32) << 8)
+            | (bytes[idx + 3] as u32);
+        let y_raw = ((bytes[idx + 4] as u32) << 24)
+            | ((bytes[idx + 5] as u32) << 16)
+            | ((bytes[idx + 6] as u32) << 8)
+            | (bytes[idx + 7] as u32);
+        idx += 8;
+
+        let x = (x_raw as f64) / (u32::MAX as f64);
+        let y = (y_raw as f64) / (u32::MAX as f64);
+        pts.push((x, y));
+    }
+
+    let n = pts.len() as f64;
+    let area = 1.0;
+
+    // Precompute pairwise distances
+    let mut dists: Vec<Vec<f64>> = vec![vec![0.0; pts.len()]; pts.len()];
+    for i in 0..pts.len() {
+        let (xi, yi) = pts[i];
+        for j in (i + 1)..pts.len() {
+            let (xj, yj) = pts[j];
+            let dx = xi - xj;
+            let dy = yi - yj;
+            let d = (dx * dx + dy * dy).sqrt();
+            dists[i][j] = d;
+            dists[j][i] = d;
+        }
+    }
+
+    // Radii grid
+    let mut radii: Vec<f64> = Vec::with_capacity(n_radii);
+    for k in 1..=n_radii {
+        let r = r_max * (k as f64) / (n_radii as f64);
+        radii.push(r);
+    }
+
+    let mut k_vals: Vec<f64> = Vec::with_capacity(n_radii);
+    let mut l_vals: Vec<f64> = Vec::with_capacity(n_radii);
+
+    let mut max_abs_l = 0.0;
+
+    for &r in &radii {
+        let mut count_pairs = 0.0;
+        for i in 0..pts.len() {
+            for j in 0..pts.len() {
+                if i == j {
+                    continue;
+                }
+                if dists[i][j] <= r {
+                    count_pairs += 1.0;
+                }
+            }
+        }
+
+        // K-hat(r) = (area / n^2) * count_pairs
+        let k_hat = area * count_pairs / (n * n);
+        let l_hat = (k_hat / std::f64::consts::PI).sqrt() - r;
+
+        if l_hat.abs() > max_abs_l {
+            max_abs_l = l_hat.abs();
+        }
+
+        k_vals.push(k_hat);
+        l_vals.push(l_hat);
+    }
+
+    // Heuristic p-mapping: Poisson → L(r) ~ 0; max |L| small
+    // Use scale ~ 0.05 as initial guess; refine via calibration
+    let scale = 0.05;
+    let t = max_abs_l / scale;
+    let t_clamped = if t > 1.0 { 1.0 } else { t };
+    let p = sanitize_p(0.5 * (1.0 - t_clamped));
+
+    // ------------------------------------------------------------
+    // DEBUG LOGGING
+    // ------------------------------------------------------------
+    {
+        let filename = format!(
+            "permutation_pattern_debug_{}_{}_{}.csv",
+            thread_id,
+            sample_idx,
+			k,
+        );
+
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("ripley_k_debug.csv")
+            .unwrap();
+
+        if file.metadata().unwrap().len() == 0 {
+            writeln!(
+                file,
+                "thread_id,sample_idx,n_points,n_radii,r_max,max_abs_L,scale,p_value,radii,K_vals,L_vals,points_sample"
+            )
+            .unwrap();
+        }
+
+        let radii_s: Vec<String> = radii.iter().map(|r| format!("{:.6}", r)).collect();
+        let k_s: Vec<String> = k_vals.iter().map(|v| format!("{:.6}", v)).collect();
+        let l_s: Vec<String> = l_vals.iter().map(|v| format!("{:.6}", v)).collect();
+
+        let pts_sample: Vec<String> = pts
+            .iter()
+            .take(32)
+            .map(|(x, y)| format!("{:.6}:{:.6}", x, y))
+            .collect();
+
+        writeln!(
+            file,
+            "{},{},{},{},{},{:.6},{:.6},{:.6},{},{},{},{}",
+            thread_id,
+            sample_idx,
+            n_points,
+            n_radii,
+            r_max,
+            max_abs_l,
+            scale,
+            p,
+            radii_s.join("|"),
+            k_s.join("|"),
+            l_s.join("|"),
+            pts_sample.join("|")
+        )
+        .unwrap();
+    }
+
+    p
+}
+
+// ================================================================
+//  Voronoi Cell Volume Test (2D, Monte-Carlo approximation)
+//  - Points in [0,1]^2 from RNG
+//  - Approximate Voronoi cell areas via random probes
+//  - Analyze coefficient of variation vs Poisson-Voronoi expectation
+//  - Full debug logging for calibration
+// ================================================================
+pub fn voronoi_cell_volume_unified_test(
+    stream: &mut BitByteStream,
+    thread_id: usize,
+    sample_idx: usize,
+    n_points: usize,  // e.g., 128–512
+    n_probes: usize,  // e.g., 4096–32768
+) -> f64 {
+    let bytes = &stream.bytes;
+    let needed_points = n_points * 8;
+    let needed_probes = n_probes * 8;
+    if bytes.len() < needed_points + needed_probes || n_points < 16 || n_probes < n_points * 8 {
+        return 0.0;
+    }
+
+    // ------------------------------------------------------------
+    // Map bytes → generator points in [0,1]^2
+    // ------------------------------------------------------------
+    let mut idx = 0usize;
+    let mut gens: Vec<(f64, f64)> = Vec::with_capacity(n_points);
+    for _ in 0..n_points {
+        let x_raw = ((bytes[idx] as u32) << 24)
+            | ((bytes[idx + 1] as u32) << 16)
+            | ((bytes[idx + 2] as u32) << 8)
+            | (bytes[idx + 3] as u32);
+        let y_raw = ((bytes[idx + 4] as u32) << 24)
+            | ((bytes[idx + 5] as u32) << 16)
+            | ((bytes[idx + 6] as u32) << 8)
+            | (bytes[idx + 7] as u32);
+        idx += 8;
+
+        let x = (x_raw as f64) / (u32::MAX as f64);
+        let y = (y_raw as f64) / (u32::MAX as f64);
+        gens.push((x, y));
+    }
+
+    // ------------------------------------------------------------
+    // Monte-Carlo Voronoi: random probes → nearest generator
+    // ------------------------------------------------------------
+    let mut counts = vec![0usize; n_points];
+    for _ in 0..n_probes {
+        let x_raw = ((bytes[idx] as u32) << 24)
+            | ((bytes[idx + 1] as u32) << 16)
+            | ((bytes[idx + 2] as u32) << 8)
+            | (bytes[idx + 3] as u32);
+        let y_raw = ((bytes[idx + 4] as u32) << 24)
+            | ((bytes[idx + 5] as u32) << 16)
+            | ((bytes[idx + 6] as u32) << 8)
+            | (bytes[idx + 7] as u32);
+        idx += 8;
+
+        let x = (x_raw as f64) / (u32::MAX as f64);
+        let y = (y_raw as f64) / (u32::MAX as f64);
+
+        let mut best = f64::INFINITY;
+        let mut best_idx = 0usize;
+        for (i, &(gx, gy)) in gens.iter().enumerate() {
+            let dx = x - gx;
+            let dy = y - gy;
+            let d2 = dx * dx + dy * dy;
+            if d2 < best {
+                best = d2;
+                best_idx = i;
+            }
+        }
+        counts[best_idx] += 1;
+    }
+
+    // ------------------------------------------------------------
+    // Cell areas and coefficient of variation
+    // ------------------------------------------------------------
+    let mut areas: Vec<f64> = counts
+        .iter()
+        .map(|&c| c as f64 / (n_probes as f64))
+        .collect();
+
+    let mean_area = areas.iter().sum::<f64>() / (n_points as f64);
+    if mean_area <= 0.0 {
+        return 0.0;
+    }
+
+    let mut var = 0.0;
+    for &a in &areas {
+        let d = a - mean_area;
+        var += d * d;
+    }
+    var /= n_points as f64;
+    let std_area = var.sqrt();
+    let cv = std_area / mean_area;
+
+    // Poisson-Voronoi in 2D: normalized cell areas have CV ≈ 0.53 (Kiang-like)
+    let expected_cv = 0.53;
+    let z = (cv - expected_cv) / 0.10; // heuristic scale; refine via calibration
+    let p = sanitize_p(2.0 * (1.0 - normal_cdf(z.abs())));
+
+    // ------------------------------------------------------------
+    // DEBUG LOGGING
+    // ------------------------------------------------------------
+    {
+        let filename = format!(
+            "voronoi_cell_volume_debug_{}_{}_{}.csv",
+            thread_id,
+            sample_idx,
+			n_points,
+            n_probes,
+        );
+
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("voronoi_cell_volume_debug.csv")
+            .unwrap();
+
+        if file.metadata().unwrap().len() == 0 {
+            writeln!(
+                file,
+                "thread_id,sample_idx,n_points,n_probes,mean_area,std_area,cv,expected_cv,z,p_value,areas_sample,counts_sample"
+            )
+            .unwrap();
+        }
+
+        let areas_sample: Vec<String> = areas
+            .iter()
+            .take(64)
+            .map(|a| format!("{:.8}", a))
+            .collect();
+
+        let counts_sample: Vec<String> = counts
+            .iter()
+            .take(64)
+            .map(|c| c.to_string())
+            .collect();
+
+        writeln!(
+            file,
+            "{},{},{},{},{:.8},{:.8},{:.8},{:.8},{:.8},{:.8},{},{}",
+            thread_id,
+            sample_idx,
+            n_points,
+            n_probes,
+            mean_area,
+            std_area,
+            cv,
+            expected_cv,
+            z,
+            p,
+            areas_sample.join("|"),
+            counts_sample.join("|")
+        )
+        .unwrap();
+    }
+
+    p
+}
+
+// ================================================================
+//  Entropy Surface Curvature Test (Byte-based)
+//  — with full calibration debug logging
+// ================================================================
+pub fn entropy_surface_curvature_test(
+    stream: &mut BitByteStream,
+    thread_id: usize,
+    sample_idx: usize,
+    block_size: usize,
+) -> f64 {
+    let bytes = &stream.bytes;
+    let n = bytes.len();
+
+    if n < block_size * 5 {
+        return 0.0;
+    }
+
+    // ------------------------------------------------------------
+    // Compute block entropies
+    // ------------------------------------------------------------
+    let mut entropies: Vec<f64> = Vec::new();
+    let mut i = 0usize;
+
+    while i + block_size <= n {
+        let blk = &bytes[i..i + block_size];
+
+        // frequency count
+        let mut freq = [0usize; 256];
+        for &b in blk {
+            freq[b as usize] += 1;
+        }
+
+        let total = block_size as f64;
+        let mut h = 0.0;
+        for &c in freq.iter() {
+            if c > 0 {
+                let p = c as f64 / total;
+                h -= p * p.log2();
+            }
+        }
+
+        entropies.push(h);
+        i += block_size;
+    }
+
+    let m = entropies.len();
+    if m < 5 {
+        return 0.0;
+    }
+
+    // ------------------------------------------------------------
+    // Fit quadratic: H(i) = a + b*i + c*i^2
+    // ------------------------------------------------------------
+    let mut s0 = 0.0;      // Σ 1
+    let mut s1 = 0.0;      // Σ i
+    let mut s2 = 0.0;      // Σ i^2
+    let mut s3 = 0.0;      // Σ i^3
+    let mut s4 = 0.0;      // Σ i^4
+
+    let mut t0 = 0.0;      // Σ H
+    let mut t1 = 0.0;      // Σ i*H
+    let mut t2 = 0.0;      // Σ i^2*H
+
+    for (idx, &h) in entropies.iter().enumerate() {
+        let i = idx as f64;
+        let i2 = i * i;
+
+        s0 += 1.0;
+        s1 += i;
+        s2 += i2;
+        s3 += i2 * i;
+        s4 += i2 * i2;
+
+        t0 += h;
+        t1 += i * h;
+        t2 += i2 * h;
+    }
+
+    // Solve 3x3 normal equations for [a, b, c]
+    let det = s0 * (s2 * s4 - s3 * s3)
+            - s1 * (s1 * s4 - s2 * s3)
+            + s2 * (s1 * s3 - s2 * s2);
+
+    if det.abs() < 1e-12 {
+        return 0.0;
+    }
+
+    let a = (t0 * (s2 * s4 - s3 * s3)
+           - s1 * (t1 * s4 - s3 * t2)
+           + s2 * (t1 * s3 - s2 * t2)) / det;
+
+    let b = (s0 * (t1 * s4 - s3 * t2)
+           - t0 * (s1 * s4 - s2 * s3)
+           + s2 * (s1 * t2 - t1 * s2)) / det;
+
+    let c = (s0 * (s2 * t2 - t1 * s3)
+           - s1 * (s1 * t2 - t1 * s2)
+           + t0 * (s1 * s3 - s2 * s2)) / det;
+
+    let curvature = c.abs();
+
+    // ------------------------------------------------------------
+    // p-value mapping (same as Python version)
+    // randomness → low curvature
+    // ------------------------------------------------------------
+    let p = {
+        let clipped = (curvature / 0.5).min(1.0).max(0.0);
+        let pv = 0.5 * (1.0 - clipped);
+        pv.min(0.5).max(0.0)
+    };
+
+    // ------------------------------------------------------------
+    // DEBUG LOGGING
+    // ------------------------------------------------------------
+    {
+        let filename = format!(
+            "entropy_surface_curvature_debug_{}_{}_{}.csv",
+            thread_id,
+            sample_idx,
+			block_size,
+        );
+
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&filename)
+            .unwrap();
+
+        if file.metadata().unwrap().len() == 0 {
+            writeln!(
+                file,
+                "thread_id,sample_idx,block_size,num_blocks,\
+                 a,b,c,curvature,p_value,entropies"
+            ).unwrap();
+        }
+
+        writeln!(
+            file,
+            "{},{},{},{},{},{},{},{},{},{}",
+            thread_id,
+            sample_idx,
+            block_size,
+            m,
+            a,
+            b,
+            c,
+            curvature,
+            p,
+            entropies.iter().map(|v| v.to_string()).collect::<Vec<_>>().join("|")
+        ).unwrap();
+    }
+
+    p
+}
+
+// ================================================================
+//  Birthday Spacing Test (32-bit words)
+//  - Uses m 32-bit values from the stream
+//  - Sorts them, computes spacings (with wrap-around)
+//  - Counts spacing collisions
+//  - Models collisions as Poisson(λ) with λ ≈ m^3 / (4n)
+//  - Full debug logging
+// ================================================================
+pub fn birthday_spacing_unified_test(
+    stream: &mut BitByteStream,
+    thread_id: usize,
+    sample_idx: usize,
+    m: usize, // number of points, e.g. 512..4096
+) -> f64 {
+    let bytes = &stream.bytes;
+    if bytes.len() < m * 4 {
+        return 0.0;
+    }
+
+    // ------------------------------------------------------------
+    // Extract m 32-bit words
+    // ------------------------------------------------------------
+    let mut vals: Vec<u32> = Vec::with_capacity(m);
+    let mut idx = 0usize;
+    for _ in 0..m {
+        let v = ((bytes[idx] as u32) << 24)
+            | ((bytes[idx + 1] as u32) << 16)
+            | ((bytes[idx + 2] as u32) << 8)
+            | (bytes[idx + 3] as u32);
+        vals.push(v);
+        idx += 4;
+    }
+
+    vals.sort_unstable();
+
+    // ------------------------------------------------------------
+    // Compute spacings with wrap-around
+    // ------------------------------------------------------------
+    let n_space: u64 = 1u64 << 32;
+    let mut spacings: Vec<u64> = Vec::with_capacity(m);
+
+    for i in 0..(m - 1) {
+        let d = (vals[i + 1] as u64).wrapping_sub(vals[i] as u64) & (n_space - 1);
+        spacings.push(d);
+    }
+    // wrap-around spacing
+    let d_last = (vals[0] as u64)
+        .wrapping_add(n_space)
+        .wrapping_sub(vals[m - 1] as u64)
+        & (n_space - 1);
+    spacings.push(d_last);
+
+    // ------------------------------------------------------------
+    // Count spacing collisions
+    // ------------------------------------------------------------
+    let mut freq: HashMap<u64, usize> = HashMap::new();
+    for s in &spacings {
+        *freq.entry(*s).or_insert(0) += 1;
+    }
+
+    let mut collisions = 0usize;
+    for &c in freq.values() {
+        if c > 1 {
+            collisions += c - 1;
+        }
+    }
+
+    // ------------------------------------------------------------
+    // Poisson model: λ ≈ m^3 / (4n)
+//  n = 2^32 here
+    // ------------------------------------------------------------
+    let m_f = m as f64;
+    let n_f = n_space as f64;
+    let lambda = m_f * m_f * m_f / (4.0 * n_f);
+
+    let k = collisions as u32;
+    let p = {
+        let cdf: f64 = poisson_cdf(k, lambda);
+        // two-sided-ish: use tail closest to 0
+        let tail = (1.0 - cdf).min(cdf);
+        sanitize_p(2.0 * tail)
+    };
+
+    // ------------------------------------------------------------
+    // DEBUG LOGGING
+    // ------------------------------------------------------------
+    {
+        let filename = format!(
+            "birthday_spacing_debug_{}_{}_{}.csv",
+            thread_id,
+            sample_idx,
+			m,
+        );
+
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&filename)
+            .unwrap();
+
+        if file.metadata().unwrap().len() == 0 {
+            writeln!(
+                file,
+                "thread_id,sample_idx,m,lambda,collisions,p_value,first_vals,first_spacings,spacing_freq_sample"
+            )
+            .unwrap();
+        }
+
+        let first_vals: Vec<String> = vals
+            .iter()
+            .take(16)
+            .map(|v| v.to_string())
+            .collect();
+
+        let first_spacings: Vec<String> = spacings
+            .iter()
+            .take(16)
+            .map(|v| v.to_string())
+            .collect();
+
+        let mut freq_sample: Vec<String> = Vec::new();
+        for (s, c) in freq.iter().take(32) {
+            freq_sample.push(format!("{}:{}", s, c));
+        }
+
+        writeln!(
+            file,
+            "{},{},{},{},{},{},{},{},{}",
+            thread_id,
+            sample_idx,
+            m,
+            lambda,
+            collisions,
+            p,
+            first_vals.join("|"),
+            first_spacings.join("|"),
+            freq_sample.join("|")
+        )
+        .unwrap();
+    }
+
+    p
+}
+
+// --------------------------------------------------------------------------------
+
 pub fn run_calibrations(thread_id: usize, sample: usize, stream: &mut BitByteStream) {
     permutation_pattern_unified_test(stream, thread_id, sample, 4);
 	permutation_pattern_unified_test(stream, thread_id, sample, 5);
@@ -7685,6 +8226,58 @@ pub fn run_calibrations(thread_id: usize, sample: usize, stream: &mut BitByteStr
 	permutation_entropy_unified_test(stream, thread_id, sample);
 	kl_divergence_unified_test(stream, thread_id, sample);
 	gini_randomness_test(stream, thread_id, sample);
+	ncd_test(stream, thread_id, sample);
+	entropy_stability_unified_test(stream, thread_id, sample);
+	sample_entropy_unified_test(stream, thread_id, sample);
+	d2_correlation_test(stream, thread_id, sample);
+	segment_clustering_scaling_test(stream, thread_id, sample);
+	wasserstein_drift_unified_test(stream, thread_id, sample);
+	martingale_betting_unified_test(stream, thread_id, sample);
+	sprt_drift_unified_test(stream, thread_id, sample);
+	snapshot_distance_matrix_unified_test(stream, thread_id, sample);
+	lz76_complexity_test(stream, thread_id, sample);
+	lz76_segment_similarity_test(stream, thread_id, sample);
+	
+	let panels = [
+        (257, 1),          // byte-level
+        (65537, 2),        // 16-bit words
+        (4294967291, 4),   // 32-bit words    
+	];
+	
+	quadratic_character_multi_panel_test(stream, thread_id, sample, panels);
+
+	birthday_spacing_unified_test(stream, thread_id, sample,32);
+	birthday_spacing_unified_test(stream, thread_id, sample,64);
+	birthday_spacing_unified_test(stream, thread_id, sample,128);
+	birthday_spacing_unified_test(stream, thread_id, sample,256);
+	birthday_spacing_unified_test(stream, thread_id, sample,512);
+	birthday_spacing_unified_test(stream, thread_id, sample,1024);
+	birthday_spacing_unified_test(stream, thread_id, sample,2048);
+	
+	entropy_surface_curvature_test(stream, thread_id, sample,128);
+	entropy_surface_curvature_test(stream, thread_id, sample,1024);
+	entropy_surface_curvature_test(stream, thread_id, sample,4096);
+	entropy_surface_curvature_test(stream, thread_id, sample,16384);
+	
+	voronoi_cell_volume_unified_test(stream, thread_id, sample,128,4096);
+	voronoi_cell_volume_unified_test(stream, thread_id, sample,128,8192);
+	voronoi_cell_volume_unified_test(stream, thread_id, sample,128,16384);
+    voronoi_cell_volume_unified_test(stream, thread_id, sample,128,32768);
+	
+	voronoi_cell_volume_unified_test(stream, thread_id, sample,256,4096);
+	voronoi_cell_volume_unified_test(stream, thread_id, sample,256,8192);
+	voronoi_cell_volume_unified_test(stream, thread_id, sample,256,16384);
+    voronoi_cell_volume_unified_test(stream, thread_id, sample,256,32768);
+
+	voronoi_cell_volume_unified_test(stream, thread_id, sample,512,4096);
+	voronoi_cell_volume_unified_test(stream, thread_id, sample,512,8192);
+	voronoi_cell_volume_unified_test(stream, thread_id, sample,512,16384);
+    voronoi_cell_volume_unified_test(stream, thread_id, sample,512,32768);
+
+	voronoi_cell_volume_unified_test(stream, thread_id, sample,1024,4096);
+	voronoi_cell_volume_unified_test(stream, thread_id, sample,1024,8192);
+	voronoi_cell_volume_unified_test(stream, thread_id, sample,1024,16384);
+    voronoi_cell_volume_unified_test(stream, thread_id, sample,1024,32768);
 }
 
 // ------------------------------------------------------------------
