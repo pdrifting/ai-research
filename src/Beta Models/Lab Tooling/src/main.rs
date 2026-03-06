@@ -5944,11 +5944,11 @@ pub fn predictability_test(
     //let window = 4;
     //let degree = 2;
 
-    let mut xs: Vec<[f64; 4]> = Vec::new();
+    let mut xs: Vec<Vec<f64>> = Vec::new();
     let mut ys: Vec<f64> = Vec::new();
 
     for i in 0..(n - window) {
-        let mut x = [0.0; 4];
+        let mut x = vec![0.0; window];
         for j in 0..window {
             x[j] = data[i + j] as f64;
         }
@@ -8288,17 +8288,17 @@ pub fn run_calibrations(thread_id: usize, sample: usize, stream: &mut BitByteStr
 	doublet_heavy_test(stream, thread_id, sample);
 	triplet_heavy_test(stream, thread_id, sample);
 	
-	predictability_test(stream, thread_id, sample, 4, 2);
+    predictability_test(stream, thread_id, sample, 4, 2);
 	predictability_test(stream, thread_id, sample, 4, 3);
-	predictability_test(stream, thread_id, sample, 4, 3);
+	predictability_test(stream, thread_id, sample, 4, 4);
 	
 	predictability_test(stream, thread_id, sample, 5, 2);
 	predictability_test(stream, thread_id, sample, 5, 3);
-	predictability_test(stream, thread_id, sample, 5, 3);
+	predictability_test(stream, thread_id, sample, 5, 4);
 	
 	predictability_test(stream, thread_id, sample, 6, 2);
 	predictability_test(stream, thread_id, sample, 6, 3);
-	predictability_test(stream, thread_id, sample, 6, 3);
+	predictability_test(stream, thread_id, sample, 6, 4);
 	
 	permutation_entropy_unified_test(stream, thread_id, sample);
 	kl_divergence_unified_test(stream, thread_id, sample);
