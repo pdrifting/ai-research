@@ -1024,7 +1024,6 @@ impl BitByteStream {
         // Unified sample entropy
 		// --------------------------------
 		let sampen_m = if bucket <= 2 { 2 } else { 3 };
-
         let sampen_r_scale = if sampen_m == 2 { 0.20 } else { 0.15 };
 
         let sampen_limit = match bucket {
@@ -1108,8 +1107,8 @@ impl BitByteStream {
 		// Unified SPRT drift test
 		// -----------------------------------
         let (sprt_use_windows, sprt_window_size, sprt_step, sprt_scale) = match bucket {
-            0 => (false, byte_len, 0, 1.0),
-            1 => (false, byte_len, 0, 1.0),
+            0 => (false, byte_len, 1, 1.0),
+            1 => (false, 200, 100, 1.0),
             2 => (true, 5000, 2500, 1.2),
             3 => (true, 10000, 5000, 1.4),
             4 => (true, 10000, 5000, 1.6),
@@ -2563,6 +2562,96 @@ pub fn entropy_global_test(stream: &mut BitByteStream) -> f64 {
     *rates.last().unwrap()
 }
 
+pub fn voronoi_cell_volume_test_fast(
+    stream: &mut BitByteStream,
+    thread_id: usize,
+    sample_idx: usize,
+) -> f64 {
+    const N_POINTS: usize = 128;
+    const N_PROBES: usize = 4096;
+
+    let bytes = &stream.bytes;
+    let needed_points = N_POINTS * 8;
+    let needed_probes = N_PROBES * 8;
+
+    if bytes.len() < needed_points + needed_probes {
+        return 0.0;
+    }
+
+    // -----------------------------
+    // Load generator points
+    // -----------------------------
+    let mut idx = 0usize;
+    let mut gens: Vec<(f64, f64)> = Vec::with_capacity(N_POINTS);
+
+    for _ in 0..N_POINTS {
+        let x_raw = u32::from_be_bytes(bytes[idx..idx+4].try_into().unwrap());
+        let y_raw = u32::from_be_bytes(bytes[idx+4..idx+8].try_into().unwrap());
+        idx += 8;
+
+        gens.push((
+            x_raw as f64 / (u32::MAX as f64),
+            y_raw as f64 / (u32::MAX as f64),
+        ));
+    }
+
+    // -----------------------------
+    // Monte‑Carlo Voronoi probing
+    // -----------------------------
+    let mut counts = vec![0usize; N_POINTS];
+
+    for _ in 0..N_PROBES {
+        let x_raw = u32::from_be_bytes(bytes[idx..idx+4].try_into().unwrap());
+        let y_raw = u32::from_be_bytes(bytes[idx+4..idx+8].try_into().unwrap());
+        idx += 8;
+
+        let x = x_raw as f64 / (u32::MAX as f64);
+        let y = y_raw as f64 / (u32::MAX as f64);
+
+        let mut best = f64::INFINITY;
+        let mut best_idx = 0usize;
+
+        for (i, &(gx, gy)) in gens.iter().enumerate() {
+            let dx = x - gx;
+            let dy = y - gy;
+            let d2 = dx*dx + dy*dy;
+
+            if d2 < best {
+                best = d2;
+                best_idx = i;
+            }
+        }
+
+        counts[best_idx] += 1;
+    }
+
+    // -----------------------------
+    // Compute CV of cell areas
+    // -----------------------------
+    let areas: Vec<f64> = counts
+        .iter()
+        .map(|&c| c as f64 / (N_PROBES as f64))
+        .collect();
+
+    let mean_area = 1.0 / (N_POINTS as f64);
+
+    let mut var = 0.0;
+    for &a in &areas {
+        let d = a - mean_area;
+        var += d * d;
+    }
+    var /= N_POINTS as f64;
+
+    let std_area = var.sqrt();
+    let cv = std_area / mean_area;
+
+    // Expected CV for Poisson‑Voronoi in 2D
+    let expected_cv = 0.53;
+    let z = (cv - expected_cv) / 0.10;
+
+    sanitize_p(2.0 * (1.0 - normal_cdf(z.abs())))
+}
+
 // ------------------------------------------------------------------------------------------------------
 // ------------------------------------------------------------------------------------------------------
 // ------------------------------------------------------------------------------------------------------
@@ -3686,9 +3775,11 @@ pub fn sprt_drift_window_test(
     let bits = &stream.bits;
     let n = bits.len();
     let window_size = stream.sprt_window_size;
-    let step = stream.sprt_step;
-    let scale = stream.sprt_scale;
 
+    // ---- FIX: prevent step_by(0) panic ----
+    let step = 1;
+
+    let scale = stream.sprt_scale;
     let log_p0 = (0.5f64).ln();
 
     let filename = format!(
@@ -7691,166 +7782,7 @@ pub fn ripley_k_unified_test(
     p
 }
 
-// ================================================================
-//  Voronoi Cell Volume Test (2D, Monte-Carlo approximation)
-//  - Points in [0,1]^2 from RNG
-//  - Approximate Voronoi cell areas via random probes
-//  - Analyze coefficient of variation vs Poisson-Voronoi expectation
-//  - Full debug logging for calibration
-// ================================================================
-pub fn voronoi_cell_volume_unified_test(
-    stream: &mut BitByteStream,
-    thread_id: usize,
-    sample_idx: usize,
-    n_points: usize,  // e.g., 128–512
-    n_probes: usize,  // e.g., 4096–32768
-) -> f64 {
-    let bytes = &stream.bytes;
-    let needed_points = n_points * 8;
-    let needed_probes = n_probes * 8;
-    if bytes.len() < needed_points + needed_probes || n_points < 16 || n_probes < n_points * 8 {
-        return 0.0;
-    }
 
-    // ------------------------------------------------------------
-    // Map bytes → generator points in [0,1]^2
-    // ------------------------------------------------------------
-    let mut idx = 0usize;
-    let mut gens: Vec<(f64, f64)> = Vec::with_capacity(n_points);
-    for _ in 0..n_points {
-        let x_raw = ((bytes[idx] as u32) << 24)
-            | ((bytes[idx + 1] as u32) << 16)
-            | ((bytes[idx + 2] as u32) << 8)
-            | (bytes[idx + 3] as u32);
-        let y_raw = ((bytes[idx + 4] as u32) << 24)
-            | ((bytes[idx + 5] as u32) << 16)
-            | ((bytes[idx + 6] as u32) << 8)
-            | (bytes[idx + 7] as u32);
-        idx += 8;
-
-        let x = (x_raw as f64) / (u32::MAX as f64);
-        let y = (y_raw as f64) / (u32::MAX as f64);
-        gens.push((x, y));
-    }
-
-    // ------------------------------------------------------------
-    // Monte-Carlo Voronoi: random probes → nearest generator
-    // ------------------------------------------------------------
-    let mut counts = vec![0usize; n_points];
-    for _ in 0..n_probes {
-        let x_raw = ((bytes[idx] as u32) << 24)
-            | ((bytes[idx + 1] as u32) << 16)
-            | ((bytes[idx + 2] as u32) << 8)
-            | (bytes[idx + 3] as u32);
-        let y_raw = ((bytes[idx + 4] as u32) << 24)
-            | ((bytes[idx + 5] as u32) << 16)
-            | ((bytes[idx + 6] as u32) << 8)
-            | (bytes[idx + 7] as u32);
-        idx += 8;
-
-        let x = (x_raw as f64) / (u32::MAX as f64);
-        let y = (y_raw as f64) / (u32::MAX as f64);
-
-        let mut best = f64::INFINITY;
-        let mut best_idx = 0usize;
-        for (i, &(gx, gy)) in gens.iter().enumerate() {
-            let dx = x - gx;
-            let dy = y - gy;
-            let d2 = dx * dx + dy * dy;
-            if d2 < best {
-                best = d2;
-                best_idx = i;
-            }
-        }
-        counts[best_idx] += 1;
-    }
-
-    // ------------------------------------------------------------
-    // Cell areas and coefficient of variation
-    // ------------------------------------------------------------
-    let areas: Vec<f64> = counts
-        .iter()
-        .map(|&c| c as f64 / (n_probes as f64))
-        .collect();
-
-    let mean_area = areas.iter().sum::<f64>() / (n_points as f64);
-    if mean_area <= 0.0 {
-        return 0.0;
-    }
-
-    let mut var = 0.0;
-    for &a in &areas {
-        let d = a - mean_area;
-        var += d * d;
-    }
-    var /= n_points as f64;
-    let std_area = var.sqrt();
-    let cv = std_area / mean_area;
-
-    // Poisson-Voronoi in 2D: normalized cell areas have CV ≈ 0.53 (Kiang-like)
-    let expected_cv = 0.53;
-    let z = (cv - expected_cv) / 0.10; // heuristic scale; refine via calibration
-    let p = sanitize_p(2.0 * (1.0 - normal_cdf(z.abs())));
-
-    // ------------------------------------------------------------
-    // DEBUG LOGGING
-    // ------------------------------------------------------------
-    {
-        let filename = format!(
-            "voronoi_cell_volume_debug_{}_{}_{}_{}.csv",
-            thread_id,
-            sample_idx,
-			n_points,
-            n_probes,
-        );
-
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&filename)
-            .unwrap();
-
-        if file.metadata().unwrap().len() == 0 {
-            writeln!(
-                file,
-                "thread_id,sample_idx,n_points,n_probes,mean_area,std_area,cv,expected_cv,z,p_value,areas_sample,counts_sample"
-            )
-            .unwrap();
-        }
-
-        let areas_sample: Vec<String> = areas
-            .iter()
-            .take(64)
-            .map(|a| format!("{:.8}", a))
-            .collect();
-
-        let counts_sample: Vec<String> = counts
-            .iter()
-            .take(64)
-            .map(|c| c.to_string())
-            .collect();
-
-        writeln!(
-            file,
-            "{},{},{},{},{:.8},{:.8},{:.8},{:.8},{:.8},{:.8},{},{}",
-            thread_id,
-            sample_idx,
-            n_points,
-            n_probes,
-            mean_area,
-            std_area,
-            cv,
-            expected_cv,
-            z,
-            p,
-            areas_sample.join("|"),
-            counts_sample.join("|")
-        )
-        .unwrap();
-    }
-
-    p
-}
 
 // ================================================================
 //  Entropy Surface Curvature Test (Byte-based)
@@ -8172,6 +8104,8 @@ pub fn poisson_cdf(k: u32, lambda: f64) -> f64 {
 // --------------------------------------------------------------------------------
 
 pub fn run_calibrations(thread_id: usize, sample: usize, stream: &mut BitByteStream) {
+/*
+
     permutation_pattern_unified_test(stream, thread_id, sample, 4);
 	permutation_pattern_unified_test(stream, thread_id, sample, 5);
 	permutation_pattern_unified_test(stream, thread_id, sample, 6);
@@ -8267,27 +8201,11 @@ pub fn run_calibrations(thread_id: usize, sample: usize, stream: &mut BitByteStr
 	entropy_surface_curvature_test(stream, thread_id, sample,1024);
 	entropy_surface_curvature_test(stream, thread_id, sample,4096);
 	entropy_surface_curvature_test(stream, thread_id, sample,16384);
-	
-	voronoi_cell_volume_unified_test(stream, thread_id, sample,128,4096);
-	voronoi_cell_volume_unified_test(stream, thread_id, sample,128,8192);
-	voronoi_cell_volume_unified_test(stream, thread_id, sample,128,16384);
-    voronoi_cell_volume_unified_test(stream, thread_id, sample,128,32768);
-	
-	voronoi_cell_volume_unified_test(stream, thread_id, sample,256,4096);
-	voronoi_cell_volume_unified_test(stream, thread_id, sample,256,8192);
-	voronoi_cell_volume_unified_test(stream, thread_id, sample,256,16384);
-    voronoi_cell_volume_unified_test(stream, thread_id, sample,256,32768);
+*/
 
-	voronoi_cell_volume_unified_test(stream, thread_id, sample,512,4096);
-	voronoi_cell_volume_unified_test(stream, thread_id, sample,512,8192);
-	voronoi_cell_volume_unified_test(stream, thread_id, sample,512,16384);
-    voronoi_cell_volume_unified_test(stream, thread_id, sample,512,32768);
 
-	voronoi_cell_volume_unified_test(stream, thread_id, sample,1024,4096);
-	voronoi_cell_volume_unified_test(stream, thread_id, sample,1024,8192);
-	voronoi_cell_volume_unified_test(stream, thread_id, sample,1024,16384);
-    voronoi_cell_volume_unified_test(stream, thread_id, sample,1024,32768);
-	
+
+/*	
 	ripley_k_unified_test(stream, thread_id, sample, 256, 16, 0.20);
 	ripley_k_unified_test(stream, thread_id, sample, 256, 16, 0.25);
 	ripley_k_unified_test(stream, thread_id, sample, 256, 32, 0.20);
@@ -8302,6 +8220,7 @@ pub fn run_calibrations(thread_id: usize, sample: usize, stream: &mut BitByteStr
 	ripley_k_unified_test(stream, thread_id, sample, 1024, 16, 0.25);
 	ripley_k_unified_test(stream, thread_id, sample, 1024, 32, 0.20);
 	ripley_k_unified_test(stream, thread_id, sample, 1024, 32, 0.25);
+*/
 }
 
 // ------------------------------------------------------------------
@@ -8680,7 +8599,7 @@ fn main() {
     let mut rng = ChaCha20Rng::from_entropy();
 
     for i in 0..1200 {
-        let bytes = generate_random_bytes(&mut rng, 131_072);
+        let bytes = generate_random_bytes(&mut rng, 1024 * 1024);
         let mut stream = BitByteStream::new_from_bytes(bytes);
         run_calibrations(0, 1, &mut stream);
         println!("running calibrations: {}", i);
