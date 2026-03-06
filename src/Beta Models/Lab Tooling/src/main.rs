@@ -4526,16 +4526,23 @@ pub fn d2_correlation_test(stream: &mut BitByteStream) -> f64 {
 */
 
 // ================================================================
-//  Delay-Embedding Correlation Test (D2, subsampled) — debug logging
+//  Delay-Embedding Correlation Test (D2, subsampled) — debug logging (patched)
 // ================================================================
 pub fn d2_correlation_test(
     stream: &mut BitByteStream,
     thread_id: usize,
-    sample_idx: usize
+    sample_idx: usize,
 ) -> f64 {
+    use std::fs::OpenOptions;
+    use std::io::Write;
+
     let data = &stream.bytes;
     let n = data.len();
     let tau = 1usize;
+
+    if n < 2 * tau + 1 {
+        return 0.5;
+    }
 
     // Build 3D vectors
     let mut pts = Vec::with_capacity(n - 2 * tau);
@@ -4553,7 +4560,7 @@ pub fn d2_correlation_test(
     }
 
     // Subsampled correlation integral
-    let sample_size = m.min(4096);
+    let target_sample_size = m.min(4096);
     let neighbors_per = 64usize;
     let r = 20.0;
     let r2 = r * r;
@@ -4561,11 +4568,20 @@ pub fn d2_correlation_test(
     let mut hits = 0u64;
     let mut trials = 0u64;
 
+    // Choose stride so that we use at most target_sample_size centers.
+    // Using ceil keeps centers <= target_sample_size.
+    let stride = ((m as f64) / (target_sample_size as f64)).ceil() as usize;
+    let stride = stride.max(1);
+
+    // For neighbor stepping, keep the original scheme.
     let step = (m / neighbors_per.max(1)).max(1);
-    let stride = (m / sample_size.max(1)).max(1);
+
+    let mut actual_sample_size = 0u64;
 
     for i in (0..m).step_by(stride) {
         let a = pts[i];
+        actual_sample_size += 1;
+
         let mut j = (i + step) % m;
         for _ in 0..neighbors_per {
             let b = pts[j];
@@ -4599,7 +4615,7 @@ pub fn d2_correlation_test(
     let p = sanitize_p(2.0 * (1.0 - normal_cdf(z.abs())));
 
     // -------------------------
-    // LOGGING
+    // LOGGING (patched)
     // -------------------------
     {
         let filename = format!(
@@ -4617,21 +4633,25 @@ pub fn d2_correlation_test(
         if file.metadata().unwrap().len() == 0 {
             writeln!(
                 file,
-                "thread_id,sample_idx,n,m,sample_size,neighbors_per,r,r2,hits,trials,d2,expected,variance,z,p_value"
+                "thread_id,sample_idx,n,m,target_sample_size,actual_sample_size,\
+neighbors_per,r,r2,stride,step,hits,trials,d2,expected,variance,z,p_value"
             ).unwrap();
         }
 
         writeln!(
             file,
-            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
             thread_id,
             sample_idx,
             n,
             m,
-            sample_size,
+            target_sample_size,
+            actual_sample_size,
             neighbors_per,
             r,
             r2,
+            stride,
+            step,
             hits,
             trials,
             d2,
@@ -5212,9 +5232,13 @@ pub fn gini_randomness_test(stream: &mut BitByteStream) -> f64 {
 }
 */
 
-//-----------------------------------------
-// Gini Randomness Test (with debug logging)
-//-----------------------------------------
+// -------------------------------------------------------------
+//  Gini Randomness Test (patched for multinomial correctness)
+//  - Correct expected value for discrete uniform
+//  - Correct variance for multinomial histogram
+//  - Integer-stable Gini computation
+//  - Full debug logging
+// -------------------------------------------------------------
 pub fn gini_randomness_test(
     stream: &mut BitByteStream,
     thread_id: usize,
@@ -5226,29 +5250,32 @@ pub fn gini_randomness_test(
     let counts = &stream.byte_histogram;
     let n = stream.byte_len as f64;
 
-    // probabilities
-    let mut probs = [0.0f64; 256];
-    for i in 0..256 {
-        probs[i] = counts[i] as f64 / n;
+    if n <= 0.0 {
+        return 0.5;
     }
 
-    // sorted probabilities
-    let mut sorted = probs;
-    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    // ---- Sort counts (not probabilities) ----
+    let mut sorted: Vec<u64> = counts.to_vec();
+    sorted.sort_unstable();
 
     let k = 256.0;
 
-    // Gini coefficient
-    let mut g = 0.0;
-    for (i, p) in sorted.iter().enumerate() {
+    // ---- Compute Gini using integer counts ----
+    // G = (1/(n*k)) * sum_i ( (2*i - k - 1) * count_i )
+    let mut g_num = 0.0;
+    for (i, &c) in sorted.iter().enumerate() {
         let idx = i as f64 + 1.0;
-        g += (2.0 * idx - k - 1.0) * p;
+        g_num += (2.0 * idx - k - 1.0) * (c as f64);
     }
-    g /= k;
+    let g = g_num / (n * k);
 
-    // expected & variance
-    let e_g = (k - 1.0) / (k + 1.0) * (1.0 / k);
-    let var_g = ((k * k - 1.0) / ((k + 1.0).powi(2) * (k + 2.0))) * (1.0 / n);
+    // ---- Correct expected value for multinomial ----
+    // E[G] = (k - 1) / (k * (k + 1))
+    let e_g = (k - 1.0) / (k * (k + 1.0));
+
+    // ---- Correct variance for multinomial histogram ----
+    // Var(G) = [2(k-1)] / [k^2 (k+1)(k+2)] * (1/n)
+    let var_g = (2.0 * (k - 1.0)) / (k * k * (k + 1.0) * (k + 2.0)) * (1.0 / n);
 
     let z = if var_g > 0.0 {
         (g - e_g) / var_g.sqrt()
@@ -5258,15 +5285,9 @@ pub fn gini_randomness_test(
 
     let p = sanitize_p(1.0 - normal_cdf(z.abs()));
 
-    // -------------------------
-    // LOGGING
-    // -------------------------
+    // ---- Logging ----
     {
-        let filename = format!(
-            "gini_debug_{}_{}.csv",
-            thread_id,
-            sample_idx,
-        );
+        let filename = format!("gini_debug_{}_{}.csv", thread_id, sample_idx);
 
         let mut file = OpenOptions::new()
             .create(true)
@@ -5277,7 +5298,7 @@ pub fn gini_randomness_test(
         if file.metadata().unwrap().len() == 0 {
             writeln!(
                 file,
-                "thread_id,sample_idx,n,g,e_g,var_g,z,p_value,probs"
+                "thread_id,sample_idx,n,g,e_g,var_g,z,p_value,sorted_counts"
             ).unwrap();
         }
 
@@ -5292,7 +5313,10 @@ pub fn gini_randomness_test(
             var_g,
             z,
             p,
-            sorted.iter().map(|v| v.to_string()).collect::<Vec<_>>().join("|")
+            sorted.iter()
+                .map(|v| v.to_string())
+                .collect::<Vec<_>>()
+                .join("|")
         ).unwrap();
     }
 
@@ -5352,9 +5376,9 @@ pub fn kl_divergence_unified_test(stream: &mut BitByteStream) -> f64 {
 */
 
 // ================================================================
-//  KL Divergence Rate Tests (Byte-based) with logging
+//  KL Divergence Byte Histogram Tests (Byte-based) with logging
 // ================================================================
-pub fn kl_divergence_unified_test(
+pub fn kl_divergence_byte_histogram_test(
     stream: &mut BitByteStream,
     thread_id: usize,
     sample_idx: usize,
@@ -5363,7 +5387,7 @@ pub fn kl_divergence_unified_test(
     let scale = stream.kl_scale;
 
     // ---------------------------------------------------------
-    // 0‑ORDER KL: BYTE HISTOGRAM
+    // 0‑ORDER KL: 
     // ---------------------------------------------------------
     let filename = format!(
         "kl_divergence_debug_{}_{}.csv",
@@ -5371,58 +5395,76 @@ pub fn kl_divergence_unified_test(
         sample_idx,
     );
 
-    if !stream.use_transition_kl {
-        let n_f = n as f64;
-        let uniform_p = 1.0 / 256.0;
+    let n_f = n as f64;
+    let uniform_p = 1.0 / 256.0;
+    let mut kl = 0.0;
+    let mut nonzero_bins = 0usize;
 
-        let mut kl = 0.0;
-        let mut nonzero_bins = 0usize;
-
-        for &c in &stream.byte_histogram {
-            if c > 0 {
-                nonzero_bins += 1;
-                let p = c as f64 / n_f;
-                kl += p * (p / uniform_p).ln();
-            }
+    for &c in &stream.byte_histogram {
+        if c > 0 {
+            nonzero_bins += 1;
+            let p = c as f64 / n_f;
+            kl += p * (p / uniform_p).ln();
         }
+    }
 
-        let chi = 2.0 * n_f * kl * scale;
-        let df = 255.0;
-        let p = sanitize_p(chi_square_cdf(chi, df));
+    // Correct χ² approximation (no scale)
+    let chi = 2.0 * n_f * kl;
+    let df = 255.0;
 
-        // ---- LOGGING ----
-        {
-            let mut file = OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&filename)
-                .unwrap();
+    // Correct right‑tail p‑value
+    let p = sanitize_p(1.0 - chi_square_cdf(chi, df));
 
-            if file.metadata().unwrap().len() == 0 {
-                writeln!(
-                    file,
-                    "thread_id,sample_idx,mode,n,scale,kl,chi,df,p_value,nonzero_bins"
-                ).unwrap();
-            }
+    // Logging
+    {
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&filename)
+            .unwrap();
 
+        if file.metadata().unwrap().len() == 0 {
             writeln!(
                 file,
-                "{},{},{},{},{},{},{},{},{},{}",                
-				thread_id,
-                sample_idx,
-                "byte_hist",
-                n,
-                scale,
-                kl,
-                chi,
-                df,
-                p,
-                nonzero_bins
+                "thread_id,sample_idx,mode,n,scale,kl,chi,df,p_value,nonzero_bins"
             ).unwrap();
         }
 
-        return p;
+        writeln!(
+            file,
+            "{},{},{},{},{},{},{},{},{},{}",
+            thread_id,
+            sample_idx,
+            "byte_hist",
+            n,
+            scale,
+            kl,
+            chi,
+            df,
+            p,
+            nonzero_bins
+        ).unwrap();
     }
+
+    p;
+}
+
+// ================================================================
+//  KL Divergence Matrix Tests (Byte-based) with logging
+// ================================================================
+pub fn kl_divergence_matrix_test(
+    stream: &mut BitByteStream,
+    thread_id: usize,
+    sample_idx: usize,
+) -> f64 {
+    let n = stream.byte_len;
+    let scale = stream.kl_scale;
+
+    let filename = format!(
+        "kl_divergence_matrix_debug_{}_{}.csv",
+        thread_id,
+        sample_idx,
+    );
 
     // ---------------------------------------------------------
     // 1‑ORDER KL: TRANSITION MATRIX
@@ -6039,56 +6081,83 @@ pub fn triplet_heavy_test(
     thread_id: usize,
     sample_idx: usize,
 ) -> f64 {
-    use std::collections::HashMap;
     use std::fs::OpenOptions;
     use std::io::Write;
 
     let n = stream.byte_len;
-    if n < 4 {
+    if n < 3 {
         return 0.5;
     }
 
     let data = &stream.bytes;
-    let mut counts: HashMap<[u8; 3], u64> = HashMap::new();
+    let total_triplets = (n - 2) as u64;
 
+    // ============================================================
+    // Allocate full 256^3 domain
+    // ============================================================
+    const K: usize = 256 * 256 * 256; // 16,777,216
+    let mut counts = vec![0u32; K];
+
+    // ============================================================
+    // Count all triplets
+    // ============================================================
     for w in data.windows(3) {
-        let key = [w[0], w[1], w[2]];
-        *counts.entry(key).or_insert(0) += 1;
+        let idx = ((w[0] as usize) << 16)
+                | ((w[1] as usize) << 8)
+                |  (w[2] as usize);
+        counts[idx] += 1;
     }
 
-    let total: u64 = counts.values().sum();
-    if total == 0 {
-        return 0.5;
-    }
+    // ============================================================
+    // Expected count
+    // ============================================================
+    let expected = (total_triplets as f64) / (K as f64);
 
-    let mut freq: Vec<u64> = counts.values().cloned().collect();
-    freq.sort_unstable_by(|a, b| b.cmp(a)); // descending
-
-    let k = freq.len().min(32); // top-32 triplets
-    if k < 2 {
-        return 0.5;
-    }
-
-    let top = &freq[..k];
-    let top_sum: u64 = top.iter().sum();
-    let expected = (top_sum as f64) / (k as f64);
-
+    // ============================================================
+    // Chi-square
+    // ============================================================
     let mut chi2 = 0.0;
-    for &obs in top {
+    for &obs in &counts {
         let o = obs as f64;
         let diff = o - expected;
         chi2 += diff * diff / expected;
     }
 
-    let df = (k - 1) as f64;
+    let df = (K - 1) as f64;
     let p = sanitize_p(1.0 - chi_square_cdf(chi2, df));
 
-    // ---- LOGGING ----
+    // ============================================================
+    // Extract top 32 triplets for debugging
+    // ============================================================
+    let mut freq: Vec<(usize, u32)> = counts
+        .iter()
+        .enumerate()
+        .filter(|(_, &c)| c > 0)
+        .map(|(i, &c)| (i, c))
+        .collect();
+
+    freq.sort_unstable_by(|a, b| b.1.cmp(&a.1));
+
+    let top_k = freq.len().min(32);
+    let top = &freq[..top_k];
+
+    // Format triplet values
+    let top_strings: Vec<String> = top.iter()
+        .map(|&(idx, c)| {
+            let a = ((idx >> 16) & 0xFF) as u8;
+            let b = ((idx >> 8)  & 0xFF) as u8;
+            let c3 = (idx & 0xFF) as u8;
+            format!("{:02X}{:02X}{:02X}:{}", a, b, c3, c)
+        })
+        .collect();
+
+    // ============================================================
+    // Logging
+    // ============================================================
     {
         let filename = format!(
-            "triplet_heavy_debug_{}_{}.csv",
-            thread_id,
-            sample_idx,
+            "triplet_heavy_full_debug_{}_{}.csv",
+            thread_id, sample_idx
         );
 
         let mut file = OpenOptions::new()
@@ -6100,27 +6169,22 @@ pub fn triplet_heavy_test(
         if file.metadata().unwrap().len() == 0 {
             writeln!(
                 file,
-                "thread_id,sample_idx,n,total,k,top_sum,expected,chi2,df,p_value,top_freq"
+                "thread_id,sample_idx,n,total_triplets,expected,chi2,df,p_value,top_triplets"
             ).unwrap();
         }
 
         writeln!(
             file,
-            "{},{},{},{},{},{},{},{},{},{},{}",
+            "{},{},{},{},{},{},{},{},{}",
             thread_id,
             sample_idx,
             n,
-            total,
-            k,
-            top_sum,
+            total_triplets,
             expected,
             chi2,
             df,
             p,
-            top.iter()
-                .map(|v| v.to_string())
-                .collect::<Vec<_>>()
-                .join("|")
+            top_strings.join("|")
         ).unwrap();
     }
 
@@ -6172,53 +6236,59 @@ pub fn doublet_heavy_test(stream: &mut BitByteStream) -> f64 {
 */
 
 // ================================================================
-//  Doublet Heavy-Frequency Test (Byte-based) with logging
+//  Doublet Full-Frequency Test (all 65,536 byte pairs) with logging
 // ================================================================
 pub fn doublet_heavy_test(
     stream: &mut BitByteStream,
     thread_id: usize,
     sample_idx: usize,
 ) -> f64 {
-    let n = stream.byte_len;    
+    let n = stream.byte_len;
     let data = &stream.bytes;
-    let mut counts: HashMap<[u8; 2], u64> = HashMap::new();
 
-    for w in data.windows(2) {
-        let key = [w[0], w[1]];
-        *counts.entry(key).or_insert(0) += 1;
+    // Need at least 2 bytes to form one doublet
+    if n < 2 {
+        return 0.5;
     }
 
-    let total: u64 = counts.values().sum();
+    // ------------------------------------------------------------
+    // Count all 65,536 possible doublets
+    // ------------------------------------------------------------
+    let mut counts = [0u64; 256 * 256];
+
+    for w in data.windows(2) {
+        let idx = ((w[0] as usize) << 8) | (w[1] as usize);
+        counts[idx] += 1;
+    }
+
+    let total: u64 = (n - 1) as u64;
     if total == 0 {
         return 0.5;
     }
 
-    let mut freq: Vec<u64> = counts.values().cloned().collect();
-    freq.sort_unstable_by(|a, b| b.cmp(a)); // descending
-
-    let k = freq.len().min(16); // top-16 doublets
-    if k < 2 {
-        return 0.5;
-    }
-
-    let top = &freq[..k];
-    let top_sum: u64 = top.iter().sum();
-    let expected = (top_sum as f64) / (k as f64);
+    // ------------------------------------------------------------
+    // Chi-square against uniform over 65,536 categories
+    // ------------------------------------------------------------
+    let categories = 256 * 256;
+    let expected = (total as f64) / (categories as f64);
 
     let mut chi2 = 0.0;
-    for &obs in top {
+    for &obs in counts.iter() {
         let o = obs as f64;
         let diff = o - expected;
         chi2 += diff * diff / expected;
     }
 
-    let df = (k - 1) as f64;
+    let df = (categories - 1) as f64;
     let p = sanitize_p(1.0 - chi_square_cdf(chi2, df));
 
-    // ---- LOGGING ----
+    // ------------------------------------------------------------
+    // DEBUG LOGGING
+    //  - top-32 most frequent doublets (index and count)
+    // ------------------------------------------------------------
     {
         let filename = format!(
-            "doublet_heavy_debug_{}_{}.csv",
+            "doublet_full_debug_{}_{}.csv",
             thread_id,
             sample_idx,
         );
@@ -6232,27 +6302,43 @@ pub fn doublet_heavy_test(
         if file.metadata().unwrap().len() == 0 {
             writeln!(
                 file,
-                "thread_id,sample_idx,n,total,k,top_sum,expected,chi2,df,p_value,top_freq"
+                "thread_id,sample_idx,n,total,categories,expected,chi2,df,p_value,top_doublets"
             ).unwrap();
+        }
+
+        // Build (idx, count) list and sort by count desc
+        let mut pairs: Vec<(usize, u64)> = counts
+            .iter()
+            .enumerate()
+            .filter(|&(_, c)| *c > 0)
+            .collect();
+
+        pairs.sort_unstable_by(|a, b| b.1.cmp(&a.1));
+
+        let top_k = pairs.len().min(32);
+        let mut top_repr: Vec<String> = Vec::new();
+
+        for i in 0..top_k {
+            let (idx, c) = pairs[i];
+            let b0 = (idx >> 8) as u8;
+            let b1 = (idx & 0xFF) as u8;
+            // format: hexpair:count, e.g. "AA-BB:123"
+            top_repr.push(format!("{:02X}-{:02X}:{}", b0, b1, c));
         }
 
         writeln!(
             file,
-            "{},{},{},{},{},{},{},{},{},{},{}",
+            "{},{},{},{},{},{},{},{},{},{}",
             thread_id,
             sample_idx,
             n,
             total,
-            k,
-            top_sum,
+            categories,
             expected,
             chi2,
             df,
             p,
-            top.iter()
-                .map(|v| v.to_string())
-                .collect::<Vec<_>>()
-                .join("|")
+            top_repr.join("|"),
         ).unwrap();
     }
 
@@ -8171,7 +8257,8 @@ pub fn run_calibrations(thread_id: usize, sample: usize, stream: &mut BitByteStr
 	predictability_test(stream, thread_id, sample, 6, 4);
 	
 	permutation_entropy_unified_test(stream, thread_id, sample);
-	kl_divergence_unified_test(stream, thread_id, sample);
+	kl_divergence_byte_histogram_test(stream, thread_id, sample);
+	kl_divergence_matrix_test(stream, thread_id, sample);
 	gini_randomness_test(stream, thread_id, sample);
 	ncd_test(stream, thread_id, sample);
 	entropy_conditional_test(stream, thread_id, sample);
