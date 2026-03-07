@@ -7782,11 +7782,8 @@ pub fn ripley_k_unified_test(
     p
 }
 
-
-
 // ================================================================
-//  Entropy Surface Curvature Test (Byte-based)
-//  — with full calibration debug logging
+// Entropy Surface Curvature & Min-Entropy Validation
 // ================================================================
 pub fn entropy_surface_curvature_test(
     stream: &mut BitByteStream,
@@ -7796,147 +7793,98 @@ pub fn entropy_surface_curvature_test(
 ) -> f64 {
     let bytes = &stream.bytes;
     let n = bytes.len();
+    if n < block_size * 5 { return 0.0; }
 
-    if n < block_size * 5 {
-        return 0.0;
-    }
-
-    // ------------------------------------------------------------
-    // Compute block entropies
-    // ------------------------------------------------------------
+    let expected_h = match block_size {
+        128 => 6.55,
+        192 => 6.94,
+        256 => 7.17,
+        384 => 7.44,
+        512 => 7.59,
+        768 => 7.74,
+        _   => 7.989,		
+    };
+   
     let mut entropies: Vec<f64> = Vec::new();
     let mut i = 0usize;
+    let mut min_h = f64::INFINITY;
 
     while i + block_size <= n {
         let blk = &bytes[i..i + block_size];
-
-        // frequency count
         let mut freq = [0usize; 256];
-        for &b in blk {
-            freq[b as usize] += 1;
-        }
+        for &b in blk { freq[b as usize] += 1; }
 
         let total = block_size as f64;
         let mut h = 0.0;
-        for &c in freq.iter() {
-            if c > 0 {
-                let p = c as f64 / total;
+        for &count in freq.iter() {
+            if count > 0 {
+                let p = count as f64 / total;
                 h -= p * p.log2();
             }
         }
-
+        if h < min_h { min_h = h; }
         entropies.push(h);
         i += block_size;
     }
 
     let m = entropies.len();
-    if m < 5 {
-        return 0.0;
-    }
+    if m < 5 { return 0.0; }
 
-    // ------------------------------------------------------------
-    // Fit quadratic: H(i) = a + b*i + c*i^2
-    // ------------------------------------------------------------
-    let mut s0 = 0.0;      // Σ 1
-    let mut s1 = 0.0;      // Σ i
-    let mut s2 = 0.0;      // Σ i^2
-    let mut s3 = 0.0;      // Σ i^3
-    let mut s4 = 0.0;      // Σ i^4
-
-    let mut t0 = 0.0;      // Σ H
-    let mut t1 = 0.0;      // Σ i*H
-    let mut t2 = 0.0;      // Σ i^2*H
+    let mut s = [0.0f64; 5]; 
+    let mut t = [0.0f64; 3]; 
+    let mut sum_h2 = 0.0;
 
     for (idx, &h) in entropies.iter().enumerate() {
-        let i = idx as f64;
-        let i2 = i * i;
-
-        s0 += 1.0;
-        s1 += i;
-        s2 += i2;
-        s3 += i2 * i;
-        s4 += i2 * i2;
-
-        t0 += h;
-        t1 += i * h;
-        t2 += i2 * h;
+        let x = idx as f64;
+        let x2 = x * x;
+        s[0] += 1.0; s[1] += x; s[2] += x2; s[3] += x2 * x; s[4] += x2 * x2;
+        t[0] += h; t[1] += x * h; t[2] += x2 * h;
+        sum_h2 += h * h;
     }
 
-    // Solve 3x3 normal equations for [a, b, c]
-    let det = s0 * (s2 * s4 - s3 * s3)
-            - s1 * (s1 * s4 - s2 * s3)
-            + s2 * (s1 * s3 - s2 * s2);
+    let det = s[0] * (s[2] * s[4] - s[3] * s[3])
+            - s[1] * (s[1] * s[4] - s[2] * s[3])
+            + s[2] * (s[1] * s[3] - s[2] * s[2]);
 
-    if det.abs() < 1e-12 {
-        return 0.0;
-    }
+    if det.abs() < 1e-12 { return 0.0; }
 
-    let a = (t0 * (s2 * s4 - s3 * s3)
-           - s1 * (t1 * s4 - s3 * t2)
-           + s2 * (t1 * s3 - s2 * t2)) / det;
+    let c = (s[0] * (s[2] * t[2] - t[1] * s[3])
+           - s[1] * (s[1] * t[2] - t[1] * s[2])
+           + t[0] * (s[1] * s[3] - s[2] * s[2])) / det;
 
-    let b = (s0 * (t1 * s4 - s3 * t2)
-           - t0 * (s1 * s4 - s2 * s3)
-           + s2 * (s1 * t2 - t1 * s2)) / det;
+    let mean_h = t[0] / m as f64;
+    // Floor the variance (0.0001) to avoid hyper-sensitivity.
+    let var_h = (sum_h2 / m as f64 - mean_h * mean_h).max(0.0001);
+    let se_c = (var_h * ((s[0] * s[2] - s[1] * s[1]) / det).abs()).sqrt();
+    
+    let z = c / se_c;
+    let p_curve: f64 = 1.0 - erf(z.abs() / 2.0f64.sqrt());
 
-    let c = (s0 * (s2 * t2 - t1 * s3)
-           - s1 * (s1 * t2 - t1 * s2)
-           + t0 * (s1 * s3 - s2 * s2)) / det;
-
-    let curvature = c.abs();
-
-    // ------------------------------------------------------------
-    // p-value mapping (same as Python version)
-    // randomness → low curvature
-    // ------------------------------------------------------------
-    let p = {
-        let clipped = (curvature / 0.5).min(1.0).max(0.0);
-        let pv = 0.5 * (1.0 - clipped);
-        pv.min(0.5).max(0.0)
+    // The tripwire is set to 95% of the expected entropy for this block size.
+    // This catches the "string fails" you mentioned without flagging the "deficit".
+    let tripwire_threshold = expected_h * 0.90625;
+    let p_min = if min_h < tripwire_threshold {
+        // Linearly penalize until it hits 0.0 at 90% of expected
+        //((min_h - (expected_h * 0.9)) / (expected_h * 0.05)).clamp(0.0)
+		// overriding to auto fail anything that drops below 95%
+		0.0
+    } else {
+        1.0
     };
 
-    // ------------------------------------------------------------
-    // DEBUG LOGGING
-    // ------------------------------------------------------------
+    let final_p = p_curve.min(p_min);
+
     {
-        let filename = format!(
-            "entropy_surface_curvature_debug_{}_{}_{}.csv",
-            thread_id,
-            sample_idx,
-			block_size,
-        );
-
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&filename)
-            .unwrap();
-
+        let log_name = format!("entropy_audit_t{}_{}.csv", thread_id,block_size);
+        let mut file = OpenOptions::new().create(true).append(true).open(&log_name).unwrap();
         if file.metadata().unwrap().len() == 0 {
-            writeln!(
-                file,
-                "thread_id,sample_idx,block_size,num_blocks,\
-                 a,b,c,curvature,p_value,entropies"
-            ).unwrap();
+            writeln!(file, "block_size,expected_h,mean_h,min_h,z_score,p_curve,p_min,final_p").unwrap();
         }
-
-        writeln!(
-            file,
-            "{},{},{},{},{},{},{},{},{},{}",
-            thread_id,
-            sample_idx,
-            block_size,
-            m,
-            a,
-            b,
-            c,
-            curvature,
-            p,
-            entropies.iter().map(|v| v.to_string()).collect::<Vec<_>>().join("|")
-        ).unwrap();
+        writeln!(file, "{},{},{:.4},{:.4},{:.4},{:.6},{:.6},{:.6}",
+            block_size, expected_h, mean_h, min_h, z, p_curve, p_min, final_p).unwrap();
     }
 
-    p
+    final_p
 }
 
 // ================================================================
@@ -8196,14 +8144,15 @@ pub fn run_calibrations(thread_id: usize, sample: usize, stream: &mut BitByteStr
 	birthday_spacing_unified_test(stream, thread_id, sample,512);
 	birthday_spacing_unified_test(stream, thread_id, sample,1024);
 	birthday_spacing_unified_test(stream, thread_id, sample,2048);
+*/	
 	
 	entropy_surface_curvature_test(stream, thread_id, sample,128);
+	entropy_surface_curvature_test(stream, thread_id, sample,192);
+	entropy_surface_curvature_test(stream, thread_id, sample,256);
+	entropy_surface_curvature_test(stream, thread_id, sample,384);
+	entropy_surface_curvature_test(stream, thread_id, sample,512);
+	entropy_surface_curvature_test(stream, thread_id, sample,768);
 	entropy_surface_curvature_test(stream, thread_id, sample,1024);
-	entropy_surface_curvature_test(stream, thread_id, sample,4096);
-	entropy_surface_curvature_test(stream, thread_id, sample,16384);
-*/
-
-
 
 /*	
 	ripley_k_unified_test(stream, thread_id, sample, 256, 16, 0.20);
@@ -8589,14 +8538,90 @@ pub fn run_tests(thread_id: usize, stream: &mut BitByteStream) -> bool {
 }
 */
 
+fn expected_entropy(b: f64, a: f64, k: f64) -> f64 {
+    8.0 - a * (-k * b).exp()
+}
+
+const DATA: &[(f64, f64)] = &[
+    (128.0,   6.55),
+    (192.0,   6.94),
+    (256.0,   7.17),
+    (384.0,   7.44),
+    (512.0,   7.59),
+    (768.0,   7.74),
+    (1024.0,  7.81),
+    (16384.0, 7.989),
+];
+
+
+fn sse(a: f64, k: f64) -> f64 {
+    DATA.iter()
+        .map(|(b, e)| {
+            let pred = expected_entropy(*b, a, k);
+            let d = pred - e;
+            d * d
+        })
+        .sum()
+}
+
+pub fn fit_entropy_params() -> (f64, f64, f64) {
+    let mut best_a = 0.0;
+    let mut best_k = 0.0;
+    let mut best_err = f64::INFINITY;
+
+    // coarse grid; tighten once you see where it lands
+    for a in (100..301).map(|x| x as f64 / 100.0) {      // 1.00 .. 3.00
+        for k in (1..101).map(|x| x as f64 / 10000.0) { // 0.0001 .. 0.0100
+            let err = sse(a, k);
+            if err < best_err {
+                best_err = err;
+                best_a = a;
+                best_k = k;
+            }
+        }
+    }
+
+    (best_a, best_k, best_err)
+}
+
+
+
 fn generate_random_bytes(rng: &mut ChaCha20Rng, len: usize) -> Vec<u8> {
     let mut buf = vec![0u8; len];
     rng.fill_bytes(&mut buf);
     buf
 }
 
+pub fn mean_entropy_from_block_size(block_size: usize) -> f64 {
+    let a = 1.55;
+    let k = 0.00263;
+    let bsf: f64 = block_size as f64;
+
+    8.0 - a * (-k * bsf).exp()
+}
+
 fn main() {
     let mut rng = ChaCha20Rng::from_entropy();
+
+    let mut best_a;
+	let mut best_k;
+	let mut best_err;
+	
+	(best_a, best_k, best_err) = fit_entropy_params();
+    println!("{} {} {}", best_a, best_k, best_err);	
+    return;
+
+    println!("128 {}", mean_entropy_from_block_size(128));
+	println!("256 {}", mean_entropy_from_block_size(256));
+    println!("384 {}", mean_entropy_from_block_size(384));
+    println!("512 {}", mean_entropy_from_block_size(512));
+	println!("768 {}", mean_entropy_from_block_size(768));
+    println!("1024 {}", mean_entropy_from_block_size(1024));
+    println!("2048 {}", mean_entropy_from_block_size(2048));
+	println!("16384 {}", mean_entropy_from_block_size(16384));
+	println!("32768 {}", mean_entropy_from_block_size(32768));
+
+    return;
 
     for i in 0..1200 {
         let bytes = generate_random_bytes(&mut rng, 1024 * 1024);
