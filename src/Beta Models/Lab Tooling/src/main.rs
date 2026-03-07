@@ -665,6 +665,52 @@ pub fn safe_normal_cdf(label: &str, x: f64) -> f64 {
     normal_cdf_unsafe(x)
 }
 
+const ANCHORS: &[(f64, f64)] = &[
+    (128.0,   6.55),
+	(192.0,   6.94),
+    (256.0,   7.17),
+	(384.0,   7.44),
+    (512.0,   7.59),
+	(768.0,   7.74),
+    (1024.0,  7.81),
+	(2048.0,  7.91),
+	(4096.0,  7.95),
+    (16384.0, 7.989),
+	(65536.0, 7.997191),
+	(131072.0, 8.0),	
+];
+
+pub fn mean_entropy_from_block_size(block_size: usize) -> f64 {
+    let b = block_size as f64;
+
+    // clamp outside range
+    if b <= ANCHORS[0].0 {
+        return ANCHORS[0].1;
+    }
+    if b >= ANCHORS[ANCHORS.len() - 1].0 {
+        return ANCHORS[ANCHORS.len() - 1].1;
+    }
+
+    let lb = b.log2();
+
+    // find segment
+    for w in ANCHORS.windows(2) {
+        let (b0, e0) = w[0];
+        let (b1, e1) = w[1];
+
+        let lb0 = b0.log2();
+        let lb1 = b1.log2();
+
+        if lb >= lb0 && lb <= lb1 {
+            let t = (lb - lb0) / (lb1 - lb0);
+            return e0 + t * (e1 - e0);
+        }
+    }
+
+    // fallback (should never hit)
+    ANCHORS[ANCHORS.len() - 1].1
+}
+
 #[inline] pub fn sanitize_p(p: f64) -> f64 { if p.is_nan() || p < 0.0 { 0.0 } else { p } }
 
 // ---------------------------------------------------------------------------
@@ -7795,15 +7841,7 @@ pub fn entropy_surface_curvature_test(
     let n = bytes.len();
     if n < block_size * 5 { return 0.0; }
 
-    let expected_h = match block_size {
-        128 => 6.55,
-        192 => 6.94,
-        256 => 7.17,
-        384 => 7.44,
-        512 => 7.59,
-        768 => 7.74,
-        _   => 7.989,		
-    };
+    let expected_h = mean_entropy_from_block_size(block_size);
    
     let mut entropies: Vec<f64> = Vec::new();
     let mut i = 0usize;
@@ -8146,13 +8184,20 @@ pub fn run_calibrations(thread_id: usize, sample: usize, stream: &mut BitByteStr
 	birthday_spacing_unified_test(stream, thread_id, sample,2048);
 */	
 	
-	entropy_surface_curvature_test(stream, thread_id, sample,128);
-	entropy_surface_curvature_test(stream, thread_id, sample,192);
-	entropy_surface_curvature_test(stream, thread_id, sample,256);
-	entropy_surface_curvature_test(stream, thread_id, sample,384);
-	entropy_surface_curvature_test(stream, thread_id, sample,512);
-	entropy_surface_curvature_test(stream, thread_id, sample,768);
-	entropy_surface_curvature_test(stream, thread_id, sample,1024);
+	//entropy_surface_curvature_test(stream, thread_id, sample,128);
+	//entropy_surface_curvature_test(stream, thread_id, sample,192);
+	//entropy_surface_curvature_test(stream, thread_id, sample,256);
+	//entropy_surface_curvature_test(stream, thread_id, sample,384);
+	//entropy_surface_curvature_test(stream, thread_id, sample,512);
+	//entropy_surface_curvature_test(stream, thread_id, sample,768);
+	//entropy_surface_curvature_test(stream, thread_id, sample,1024);
+	entropy_surface_curvature_test(stream, thread_id, sample,2048);
+	entropy_surface_curvature_test(stream, thread_id, sample,4096);
+	entropy_surface_curvature_test(stream, thread_id, sample,8192);
+	entropy_surface_curvature_test(stream, thread_id, sample,16384);
+	entropy_surface_curvature_test(stream, thread_id, sample,32768);
+	entropy_surface_curvature_test(stream, thread_id, sample,65536);
+	entropy_surface_curvature_test(stream, thread_id, sample,131072);
 
 /*	
 	ripley_k_unified_test(stream, thread_id, sample, 256, 16, 0.20);
@@ -8538,92 +8583,26 @@ pub fn run_tests(thread_id: usize, stream: &mut BitByteStream) -> bool {
 }
 */
 
-fn expected_entropy(b: f64, a: f64, k: f64, c: f64) -> f64 {
-    8.0 - a * (-k * b).exp() - c / b
-}
-
-const DATA: &[(f64, f64)] = &[
-    (128.0,   6.55),
-    (192.0,   6.94),
-    (256.0,   7.17),
-    (384.0,   7.44),
-    (512.0,   7.59),
-    (768.0,   7.74),
-    (1024.0,  7.81),
-    (16384.0, 7.989),
-];
-
-fn sse(a: f64, k: f64, c: f64) -> f64 {
-    DATA.iter()
-        .map(|(b, e)| {
-            let pred = expected_entropy(*b, a, k, c);
-            let d = pred - e;
-            d * d
-        })
-        .sum()
-}
-
-pub fn fit_entropy_params() -> (f64, f64, f64, f64) {
-    let mut best_a = 0.0;
-    let mut best_k = 0.0;
-    let mut best_c = 0.0;
-    let mut best_err = f64::INFINITY;
-
-    // a: 1.0 → 3.0 in steps of 0.01
-    for a_i in 100..=300 {
-        let a = a_i as f64 / 100.0;
-
-        // k: 0.0005 → 0.0100 in steps of 0.00005
-        for k_i in 5..=200 {
-            let k = k_i as f64 / 100000.0;
-
-            // c: 0 → 80 in steps of 0.5
-            for c_i in 0..=160 {
-                let c = c_i as f64 / 2.0;
-
-                let err = sse(a, k, c);
-                if err < best_err {
-                    best_err = err;
-                    best_a = a;
-                    best_k = k;
-                    best_c = c;
-                }
-            }
-        }
-    }
-
-    (best_a, best_k, best_c, best_err)
-}
-
-
-
 fn generate_random_bytes(rng: &mut ChaCha20Rng, len: usize) -> Vec<u8> {
     let mut buf = vec![0u8; len];
     rng.fill_bytes(&mut buf);
     buf
 }
 
-pub fn mean_entropy_from_block_size(block_size: usize) -> f64 {
-    let a = 1.6;
-    let k = 0.0031;
-	let c = 40.0; 
-    let bsf: f64 = block_size as f64;
-
-    8.0 - a * (-k * bsf).exp() - c / bsf
-}
-
 fn main() {
     let mut rng = ChaCha20Rng::from_entropy();
-
-    let mut best_a;
-	let mut best_k;
-	let mut best_c;
-	let mut best_err;
+    
+	//let mut best_a;
+	//let mut best_k;
+	//let mut best_c;
+	//let mut best_d;
+	//let mut best_err;
 	
-	(best_a, best_k, best_c, best_err) = fit_entropy_params();
-    println!("{} {} {} {}", best_a, best_k, best_c, best_err);	    
+	//(best_a, best_k, best_c, best_d, best_err) = fit_entropy_params();
+    //println!("{} {} {} {} {}", best_a, best_k, best_c, best_d, best_err);	    
 
     println!("128 {}", mean_entropy_from_block_size(128));
+	println!("192 {}", mean_entropy_from_block_size(192));
 	println!("256 {}", mean_entropy_from_block_size(256));
     println!("384 {}", mean_entropy_from_block_size(384));
     println!("512 {}", mean_entropy_from_block_size(512));
@@ -8633,7 +8612,7 @@ fn main() {
 	println!("16384 {}", mean_entropy_from_block_size(16384));
 	println!("32768 {}", mean_entropy_from_block_size(32768));
 
-    return;
+    //return;
 
     for i in 0..1200 {
         let bytes = generate_random_bytes(&mut rng, 1024 * 1024);
