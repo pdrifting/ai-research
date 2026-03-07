@@ -8538,8 +8538,8 @@ pub fn run_tests(thread_id: usize, stream: &mut BitByteStream) -> bool {
 }
 */
 
-fn expected_entropy(b: f64, a: f64, k: f64) -> f64 {
-    8.0 - a * (-k * b).exp()
+fn expected_entropy(b: f64, a: f64, k: f64, c: f64) -> f64 {
+    8.0 - a * (-k * b).exp() - c / b
 }
 
 const DATA: &[(f64, f64)] = &[
@@ -8553,35 +8553,46 @@ const DATA: &[(f64, f64)] = &[
     (16384.0, 7.989),
 ];
 
-
-fn sse(a: f64, k: f64) -> f64 {
+fn sse(a: f64, k: f64, c: f64) -> f64 {
     DATA.iter()
         .map(|(b, e)| {
-            let pred = expected_entropy(*b, a, k);
+            let pred = expected_entropy(*b, a, k, c);
             let d = pred - e;
             d * d
         })
         .sum()
 }
 
-pub fn fit_entropy_params() -> (f64, f64, f64) {
+pub fn fit_entropy_params() -> (f64, f64, f64, f64) {
     let mut best_a = 0.0;
     let mut best_k = 0.0;
+    let mut best_c = 0.0;
     let mut best_err = f64::INFINITY;
 
-    // coarse grid; tighten once you see where it lands
-    for a in (100..301).map(|x| x as f64 / 100.0) {      // 1.00 .. 3.00
-        for k in (1..101).map(|x| x as f64 / 10000.0) { // 0.0001 .. 0.0100
-            let err = sse(a, k);
-            if err < best_err {
-                best_err = err;
-                best_a = a;
-                best_k = k;
+    // a: 1.0 → 3.0 in steps of 0.01
+    for a_i in 100..=300 {
+        let a = a_i as f64 / 100.0;
+
+        // k: 0.0005 → 0.0100 in steps of 0.00005
+        for k_i in 5..=200 {
+            let k = k_i as f64 / 100000.0;
+
+            // c: 0 → 80 in steps of 0.5
+            for c_i in 0..=160 {
+                let c = c_i as f64 / 2.0;
+
+                let err = sse(a, k, c);
+                if err < best_err {
+                    best_err = err;
+                    best_a = a;
+                    best_k = k;
+                    best_c = c;
+                }
             }
         }
     }
 
-    (best_a, best_k, best_err)
+    (best_a, best_k, best_c, best_err)
 }
 
 
@@ -8593,11 +8604,12 @@ fn generate_random_bytes(rng: &mut ChaCha20Rng, len: usize) -> Vec<u8> {
 }
 
 pub fn mean_entropy_from_block_size(block_size: usize) -> f64 {
-    let a = 1.55;
-    let k = 0.00263;
+    let a = 1.6;
+    let k = 0.0031;
+	let c = 40.0; 
     let bsf: f64 = block_size as f64;
 
-    8.0 - a * (-k * bsf).exp()
+    8.0 - a * (-k * bsf).exp() - c / bsf
 }
 
 fn main() {
@@ -8605,11 +8617,11 @@ fn main() {
 
     let mut best_a;
 	let mut best_k;
+	let mut best_c;
 	let mut best_err;
 	
-	(best_a, best_k, best_err) = fit_entropy_params();
-    println!("{} {} {}", best_a, best_k, best_err);	
-    return;
+	(best_a, best_k, best_c, best_err) = fit_entropy_params();
+    println!("{} {} {} {}", best_a, best_k, best_c, best_err);	    
 
     println!("128 {}", mean_entropy_from_block_size(128));
 	println!("256 {}", mean_entropy_from_block_size(256));
