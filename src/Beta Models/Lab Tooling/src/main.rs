@@ -7846,6 +7846,7 @@ pub fn entropy_surface_curvature_test(
     let mut entropies: Vec<f64> = Vec::new();
     let mut i = 0usize;
     let mut min_h = f64::INFINITY;
+	let mut max_h = 0.0;
 
     while i + block_size <= n {
         let blk = &bytes[i..i + block_size];
@@ -7861,6 +7862,7 @@ pub fn entropy_surface_curvature_test(
             }
         }
         if h < min_h { min_h = h; }
+		if h > max_h { max_h = h; }
         entropies.push(h);
         i += block_size;
     }
@@ -7912,16 +7914,18 @@ pub fn entropy_surface_curvature_test(
 
     let final_p = p_curve.min(p_min);
 
+    
     {
         let log_name = format!("entropy_audit_t{}_{}.csv", thread_id,block_size);
         let mut file = OpenOptions::new().create(true).append(true).open(&log_name).unwrap();
         if file.metadata().unwrap().len() == 0 {
             writeln!(file, "block_size,expected_h,mean_h,min_h,z_score,p_curve,p_min,final_p").unwrap();
         }
-        writeln!(file, "{},{},{:.4},{:.4},{:.4},{:.6},{:.6},{:.6}",
-            block_size, expected_h, mean_h, min_h, z, p_curve, p_min, final_p).unwrap();
+        writeln!(file, "{},{},{:.4},{:.4},{:.4},{:.4},{:.6},{:.6},{:.6}",
+            block_size, expected_h, mean_h, max_h, min_h, z, p_curve, p_min, final_p).unwrap();
     }
-
+    
+	
     final_p
 }
 
@@ -8182,24 +8186,14 @@ pub fn run_calibrations(thread_id: usize, sample: usize, stream: &mut BitByteStr
 	birthday_spacing_unified_test(stream, thread_id, sample,512);
 	birthday_spacing_unified_test(stream, thread_id, sample,1024);
 	birthday_spacing_unified_test(stream, thread_id, sample,2048);
-*/	
 	
-	//entropy_surface_curvature_test(stream, thread_id, sample,128);
-	//entropy_surface_curvature_test(stream, thread_id, sample,192);
-	//entropy_surface_curvature_test(stream, thread_id, sample,256);
-	//entropy_surface_curvature_test(stream, thread_id, sample,384);
-	//entropy_surface_curvature_test(stream, thread_id, sample,512);
-	//entropy_surface_curvature_test(stream, thread_id, sample,768);
-	//entropy_surface_curvature_test(stream, thread_id, sample,1024);
-	entropy_surface_curvature_test(stream, thread_id, sample,2048);
-	entropy_surface_curvature_test(stream, thread_id, sample,4096);
-	entropy_surface_curvature_test(stream, thread_id, sample,8192);
-	entropy_surface_curvature_test(stream, thread_id, sample,16384);
-	entropy_surface_curvature_test(stream, thread_id, sample,32768);
-	entropy_surface_curvature_test(stream, thread_id, sample,65536);
-	entropy_surface_curvature_test(stream, thread_id, sample,131072);
-
-/*	
+	
+	entropy_surface_curvature_test(stream, thread_id, sample,256);
+	entropy_surface_curvature_test(stream, thread_id, sample,384);
+	entropy_surface_curvature_test(stream, thread_id, sample,512);
+	entropy_surface_curvature_test(stream, thread_id, sample,768);
+	entropy_surface_curvature_test(stream, thread_id, sample,1024);
+	
 	ripley_k_unified_test(stream, thread_id, sample, 256, 16, 0.20);
 	ripley_k_unified_test(stream, thread_id, sample, 256, 16, 0.25);
 	ripley_k_unified_test(stream, thread_id, sample, 256, 32, 0.20);
@@ -8215,6 +8209,25 @@ pub fn run_calibrations(thread_id: usize, sample: usize, stream: &mut BitByteStr
 	ripley_k_unified_test(stream, thread_id, sample, 1024, 32, 0.20);
 	ripley_k_unified_test(stream, thread_id, sample, 1024, 32, 0.25);
 */
+
+// 1. Setup the resolutions you want to check
+let block_sizes = [256, 384, 512, 768, 1024];
+let mut p_values = Vec::new();
+
+// 2. Run the tests and push to the list
+for &bs in &block_sizes {
+    let p = entropy_surface_curvature_test(stream, thread_id, sample, bs);
+    p_values.push(p);
+}
+
+// 3. Simple boolean check: Are all resolutions healthy?
+let is_healthy = p_values.iter().all(|&p| p > 0.01);
+
+if !is_healthy {
+    println!("[!] Stream Failure: Resolution mismatch or entropy collapse detected.");
+    println!("P-values: {:?}", p_values);
+}
+
 }
 
 // ------------------------------------------------------------------
@@ -8591,28 +8604,6 @@ fn generate_random_bytes(rng: &mut ChaCha20Rng, len: usize) -> Vec<u8> {
 
 fn main() {
     let mut rng = ChaCha20Rng::from_entropy();
-    
-	//let mut best_a;
-	//let mut best_k;
-	//let mut best_c;
-	//let mut best_d;
-	//let mut best_err;
-	
-	//(best_a, best_k, best_c, best_d, best_err) = fit_entropy_params();
-    //println!("{} {} {} {} {}", best_a, best_k, best_c, best_d, best_err);	    
-
-    println!("128 {}", mean_entropy_from_block_size(128));
-	println!("192 {}", mean_entropy_from_block_size(192));
-	println!("256 {}", mean_entropy_from_block_size(256));
-    println!("384 {}", mean_entropy_from_block_size(384));
-    println!("512 {}", mean_entropy_from_block_size(512));
-	println!("768 {}", mean_entropy_from_block_size(768));
-    println!("1024 {}", mean_entropy_from_block_size(1024));
-    println!("2048 {}", mean_entropy_from_block_size(2048));
-	println!("16384 {}", mean_entropy_from_block_size(16384));
-	println!("32768 {}", mean_entropy_from_block_size(32768));
-
-    //return;
 
     for i in 0..1200 {
         let bytes = generate_random_bytes(&mut rng, 1024 * 1024);
