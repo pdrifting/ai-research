@@ -7831,6 +7831,19 @@ pub fn ripley_k_unified_test(
 // ================================================================
 // Entropy Surface Curvature & Min-Entropy Validation
 // ================================================================
+
+/*
+let block_sizes = [256, 384, 512, 768, 1024];
+=== STREAM HEALTH GAUGE (AGGREGATED) ===
+Total Streams Evaluated: 30000
+PERFECT (0 Fails): 28817 streams ( 96.06%)
+SLIGHT  (1 Fail ):   911 streams (  3.04%)
+WARNING (2 Fails):   191 streams (  0.64%)
+SICK    (3 Fails):    63 streams (  0.21%)
+CRITICAL(4 Fails):    16 streams (  0.05%)
+COLLAPSE(5 Fails):     2 streams (  0.01%)
+*/
+
 pub fn entropy_surface_curvature_test(
     stream: &mut BitByteStream,
     thread_id: usize,
@@ -8093,6 +8106,58 @@ pub fn poisson_cdf(k: u32, lambda: f64) -> f64 {
 
 // --------------------------------------------------------------------------------
 
+
+pub struct HealthGauge {
+    pub total_streams: usize,
+    // Index 0 = 0 fails, Index 1 = 1 fail, ..., Index 5 = 5 fails
+    pub fail_counts: [usize; 6],
+}
+
+impl HealthGauge {
+    pub fn new() -> Self {
+        Self {
+            total_streams: 0,
+            fail_counts: [0; 6],
+        }
+    }
+
+    pub fn record_stream(&mut self, p_values: &[f64]) {
+        self.total_streams += 1;
+        
+        // Count how many resolutions in this specific stream hit the tripwire
+        let failures = p_values.iter().filter(|&&p| p < 0.01).count();
+        
+        // Increment the corresponding bin (0 to 5)
+        if failures < 6 {
+            self.fail_counts[failures] += 1;
+        }
+    }
+
+    pub fn print_gauge(&self) {
+        if self.total_streams == 0 { return; }
+        
+        println!("\n=== STREAM HEALTH GAUGE ===");
+        println!("Total Streams Evaluated: {}", self.total_streams);
+        
+        for i in 0..6 {
+            let count = self.fail_counts[i];
+            let percent = (count as f64 / self.total_streams as f64) * 100.0;
+            
+            let label = match i {
+                0 => "PERFECT (0 Fails)",
+                1 => "SLIGHT  (1 Fail )",
+                2 => "WARNING (2 Fails)",
+                3 => "SICK    (3 Fails)",
+                4 => "CRITICAL(4 Fails)",
+                _ => "COLLAPSE(5 Fails)",
+            };
+            
+            println!("{}: {:>4} streams ({:>6.2}%)", label, count, percent);
+        }
+        println!("===========================\n");
+    }
+}
+
 pub fn run_calibrations(thread_id: usize, sample: usize, stream: &mut BitByteStream) {
 /*
 
@@ -8210,25 +8275,11 @@ pub fn run_calibrations(thread_id: usize, sample: usize, stream: &mut BitByteStr
 	ripley_k_unified_test(stream, thread_id, sample, 1024, 32, 0.25);
 */
 
-// 1. Setup the resolutions you want to check
-let block_sizes = [256, 384, 512, 768, 1024];
-let mut p_values = Vec::new();
 
-// 2. Run the tests and push to the list
-for &bs in &block_sizes {
-    let p = entropy_surface_curvature_test(stream, thread_id, sample, bs);
-    p_values.push(p);
-}
 
-// 3. Simple boolean check: Are all resolutions healthy?
-let is_healthy = p_values.iter().all(|&p| p > 0.01);
-
-if !is_healthy {
-    println!("[!] Stream Failure: Resolution mismatch or entropy collapse detected.");
-    println!("P-values: {:?}", p_values);
-}
 
 }
+
 
 // ------------------------------------------------------------------
 // these are a different kind of beast... not calibrating these
@@ -8605,11 +8656,31 @@ fn generate_random_bytes(rng: &mut ChaCha20Rng, len: usize) -> Vec<u8> {
 fn main() {
     let mut rng = ChaCha20Rng::from_entropy();
 
-    for i in 0..1200 {
+    let mut gauge = HealthGauge::new();
+
+    for _ in 0..1000 {
         let bytes = generate_random_bytes(&mut rng, 1024 * 1024);
         let mut stream = BitByteStream::new_from_bytes(bytes);
+    
+    	let mut p_values = Vec::new();
+        let block_sizes = [256, 384, 512, 768, 1024];
+
+        for &bs in &block_sizes {
+           let p = entropy_surface_curvature_test(&mut stream, 0, 1, bs);
+           p_values.push(p);
+        }
+
+        gauge.record_stream(&p_values);
+    }
+
+// See the final calibration
+gauge.print_gauge();
+
+/*
+    for i in 0..1200 {
         run_calibrations(0, 1, &mut stream);
         println!("running calibrations: {}", i);
     }
+*/
 }
 
