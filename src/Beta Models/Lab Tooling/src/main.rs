@@ -2807,7 +2807,61 @@ fn lz76_complexity(data: &[u8]) -> f64 {
     complexity
 }
 
+// ================================================================
+//  Maurer's Universal Statistical Test (Byte-based)
+// ================================================================
 
+/*
+Mean (average) = 0.522032402669
+n = 1200
+sum = 626.438883203222
+min = 0.000254072669
+max = 0.996951062222
+*/
+
+pub fn maurer_universal_byte_test(
+    stream: &mut BitByteStream,
+    thread_id: usize,
+    sample_idx: usize
+) -> f64 {
+    let n = stream.byte_len;
+    let q = 2560;
+    let mut last_seen = [0usize; 256];
+
+    for i in 0..q {
+        last_seen[stream.bytes[i] as usize] = i;
+    }
+
+    let mut sum_logs = 0.0;
+    let mut count = 0usize;
+
+    for i in q..n {
+        let sym = stream.bytes[i] as usize;
+        let last = last_seen[sym];
+
+        if last > 0 {
+            let dist = i - last;
+            sum_logs += (dist as f64).log2();
+            count += 1;
+        }
+
+        last_seen[sym] = i;
+    }
+
+    if count == 0 {
+        return 0.0;
+    }
+
+    let fn_val = sum_logs / (count as f64);    
+    let expected = 7.1836656;
+    let expected_variance = 3.238;
+
+    let c = 0.7 - 0.8/8.0 + (4.0 + 32.0/8.0) * (count as f64).powf(-3.0/8.0);
+    let sigma = c * (expected_variance / (count as f64)).sqrt();
+    let z = (fn_val - expected) / sigma;
+
+    sanitize_p(erfc(z.abs() / 2.0f64.sqrt()));    
+}
 
 // ------------------------------------------------------------------------------------------------------
 // ------------------------------------------------------------------------------------------------------
@@ -3033,165 +3087,6 @@ let pvals = quadratic_character_multi_panel_test(
     &panels
 );
 */
-
-
-/*
-// ================================================================
-//  Maurer's Universal Statistical Test (Byte-based)
-//  Measures compressibility / predictability
-//  Returns: p-value (f64)
-// ================================================================
-pub fn maurer_universal_byte_test(stream: &mut BitByteStream) -> f64 {
-    let n = stream.byte_len;
-    let q = 2560;
-    let mut last_seen = [0usize; 256];
-
-    // Warm-up phase
-    for i in 0..q {
-        last_seen[stream.bytes[i] as usize] = i;
-    }
-
-    // Test phase
-    let mut sum_logs = 0.0;
-    let mut count = 0;
-    for i in q..n {
-        let sym = stream.bytes[i] as usize;
-        let last = last_seen[sym];
-        if last > 0 {
-            sum_logs += ((i - last) as f64).log2();
-            count += 1;
-        }
-        last_seen[sym] = i;
-    }
-
-    if count == 0 { return 0.0; }
-    let fn_val = sum_logs / (count as f64);
-
-    let expected = 7.1836656;
-    let expected_variance = 3.238;
-    let c = 0.7 - 0.8/8.0 + (4.0 + 32.0/8.0) * (count as f64).powf(-3.0/8.0);
-    let sigma = c * (expected_variance / (count as f64)).sqrt();
-    let z = (fn_val - expected) / sigma;
-
-    sanitize_p(erfc(z.abs() / 2.0f64.sqrt()))
-}
-*/
-
-// ================================================================
-//  Maurer's Universal Statistical Test (Byte-based) — debug logging
-// ================================================================
-pub fn maurer_universal_byte_test(
-    stream: &mut BitByteStream,
-    thread_id: usize,
-    sample_idx: usize
-) -> f64 {
-    let n = stream.byte_len;
-    let q = 2560;
-    let mut last_seen = [0usize; 256];
-
-    // Warm-up phase
-    for i in 0..q {
-        last_seen[stream.bytes[i] as usize] = i;
-    }
-
-    // Test phase
-    let mut sum_logs = 0.0;
-    let mut count = 0usize;
-
-    // For debugging: collect raw distances statistics
-    let mut dist_min = usize::MAX;
-    let mut dist_max = 0usize;
-    let mut dist_sum = 0usize;
-    let mut dist_count = 0usize;
-
-    for i in q..n {
-        let sym = stream.bytes[i] as usize;
-        let last = last_seen[sym];
-
-        if last > 0 {
-            let dist = i - last;
-
-            // accumulate debug stats
-            if dist < dist_min { dist_min = dist; }
-            if dist > dist_max { dist_max = dist; }
-            dist_sum += dist;
-            dist_count += 1;
-
-            sum_logs += (dist as f64).log2();
-            count += 1;
-        }
-
-        last_seen[sym] = i;
-    }
-
-    if count == 0 {
-        return 0.0;
-    }
-
-    let fn_val = sum_logs / (count as f64);
-
-    // Constants (currently bit-based; debugging will confirm mismatch)
-    let expected = 7.1836656;
-    let expected_variance = 3.238;
-
-    let c = 0.7 - 0.8/8.0 + (4.0 + 32.0/8.0) * (count as f64).powf(-3.0/8.0);
-    let sigma = c * (expected_variance / (count as f64)).sqrt();
-    let z = (fn_val - expected) / sigma;
-
-    let p = sanitize_p(erfc(z.abs() / 2.0f64.sqrt()));
-
-    // -------------------------
-    // LOGGING
-    // -------------------------
-    {
-        let filename = format!(
-            "maurer_universal_debug_{}_{}.csv",
-            thread_id,
-            sample_idx,
-        );
-
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&filename)
-            .unwrap();
-
-        if file.metadata().unwrap().len() == 0 {
-            writeln!(
-                file,
-                "thread_id,sample_idx,n,q,count,fn_val,expected,expected_variance,c,sigma,z,p_value,dist_min,dist_max,dist_mean"
-            ).unwrap();
-        }
-
-        let dist_mean = if dist_count > 0 {
-            dist_sum as f64 / dist_count as f64
-        } else {
-            0.0
-        };
-
-        writeln!(
-            file,
-            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
-            thread_id,
-            sample_idx,
-            n,
-            q,
-            count,
-            fn_val,
-            expected,
-            expected_variance,
-            c,
-            sigma,
-            z,
-            p,
-            dist_min,
-            dist_max,
-            dist_mean
-        ).unwrap();
-    }
-
-    p
-}
 
 /*
 // ================================================================
@@ -7801,7 +7696,6 @@ pub fn run_calibrations(thread_id: usize, sample: usize, stream: &mut BitByteStr
 	permutation_entropy_unified_test(stream, thread_id, sample);
 	kl_divergence_byte_histogram_test(stream, thread_id, sample);
 	kl_divergence_matrix_test(stream, thread_id, sample);
-	gini_randomness_test(stream, thread_id, sample);	
 	entropy_conditional_test(stream, thread_id, sample);
 	sample_entropy_unified_test(stream, thread_id, sample);
 	d2_correlation_test(stream, thread_id, sample);
@@ -7811,9 +7705,7 @@ pub fn run_calibrations(thread_id: usize, sample: usize, stream: &mut BitByteStr
 	sprt_drift_global_test(stream, thread_id, sample);
 	sprt_drift_window_test(stream, thread_id, sample);
 	snapshot_distance_matrix_unified_test(stream, thread_id, sample);
-	lz76_complexity_test(stream, thread_id, sample);
-	lz76_segment_similarity_test(stream, thread_id, sample);
-	
+		
 	let panels = [
         (257, 1),          // byte-level
         (65537, 2),        // 16-bit words
@@ -7853,8 +7745,8 @@ pub fn run_calibrations(thread_id: usize, sample: usize, stream: &mut BitByteStr
 	ripley_k_unified_test(stream, thread_id, sample, 1024, 32, 0.25);
 */
 
-    let p: f64 = NCD_test(stream, thread_id, sample);
-	println!("{}", p);
+    gini_randomness_test(stream, thread_id, sample);
+
 }
 
 
