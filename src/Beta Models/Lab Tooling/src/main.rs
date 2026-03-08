@@ -2703,6 +2703,15 @@ pub fn voronoi_cell_volume_test_fast(
 // ================================================================
 //  NCD test
 // ================================================================
+
+
+/*
+Mean (average) = 0.486619349164
+n = 1200
+sum = 583.943218996261
+min = 0.00028251966
+max = 0.999309736387
+*/
 pub fn NCD_test(
     stream: &mut BitByteStream,
     thread_id: usize,
@@ -2716,10 +2725,10 @@ pub fn NCD_test(
     }
     
     let min_pairs: usize = 30;	
-	let extpected_mean: f64 = 0.861712;
+	let expected_mean: f64 = 0.861712;
 	let expected_std: f64 = 0.053276;
     
-    let segments: Vec<&[u8]> = bytes.chunks(self.segment_size).collect();
+    let segments: Vec<&[u8]> = bytes.chunks(segment_size).collect();
         
     let mut ncd_values = Vec::with_capacity(segments.len() - 1);
         
@@ -3246,6 +3255,7 @@ pub fn snapshot_distance_matrix_unified_test(stream: &mut BitByteStream) -> f64 
 }
 */
 
+/*
 // ================================================================
 //  Snapshot Distance Matrix Test — with debug logging
 // ================================================================
@@ -3370,6 +3380,8 @@ pub fn snapshot_distance_matrix_unified_test(
 
     p
 }
+
+*/
 
 /*
 // ================================================================
@@ -4090,6 +4102,7 @@ pub fn segment_clustering_scaling_test(stream: &mut BitByteStream) -> f64 {
 }
 */
 
+/*
 // ================================================================
 //  Segment Clustering Test — with debug logging
 // ================================================================
@@ -4270,6 +4283,7 @@ pub fn segment_clustering_scaling_test(
 
     p
 }
+*/
 
 /*
 // ================================================================
@@ -4864,170 +4878,6 @@ pub fn entropy_conditional_test(
             stat,
             p,
             cond_entropies.iter().map(|v| v.to_string()).collect::<Vec<_>>().join("|")
-        ).unwrap();
-    }
-
-    p
-}
-
-/*
-// ================================================================
-//  Normalized Compression Distance (NCD) Test
-// ================================================================
-pub fn ncd_test(stream: &mut BitByteStream) -> f64 {
-    let n = stream.byte_len;
-    if n == 0 {
-        return 0.0;
-    }
-
-    let k = 8;
-    let segments = segment_stream_bytes(stream, k);
-    if segments.len() < 2 {
-        return 0.0;
-    }
-
-    let mut ncd_values = Vec::new();
-
-    for i in 0..(segments.len() - 1) {
-        let a = segments[i];
-        let b = segments[i + 1];
-
-        let c_a = lz76_complexity_bytes_sam(a);
-        let c_b = lz76_complexity_bytes_sam(b);
-
-        if c_a <= 0.0 || c_b <= 0.0 {
-            continue;
-        }
-
-        let mut ab = Vec::with_capacity(a.len() + b.len());
-        ab.extend_from_slice(a);
-        ab.extend_from_slice(b);
-
-        let c_ab = lz76_complexity_bytes_sam(&ab);
-        let c_min = c_a.min(c_b);
-        let c_max = c_a.max(c_b);
-
-        let ncd = (c_ab - c_min) / c_max;
-        ncd_values.push(ncd);
-    }
-
-    let m = ncd_values.len();
-    if m == 0 {
-        return 0.0;
-    }
-
-    let mean_ncd = ncd_values.iter().sum::<f64>() / (m as f64);
-    let stat = (mean_ncd - 1.0) * (m as f64).sqrt();
-
-    sanitize_p(2.0 * (1.0 - normal_cdf(stat.abs())))
-}
-*/
-
-// ================================================================
-//  Normalized Compression Distance (NCD) Test — with debug logging
-// ================================================================
-pub fn ncd_test(
-    stream: &mut BitByteStream,
-    thread_id: usize,
-    sample_idx: usize
-) -> f64 {
-    let n = stream.byte_len;
-    let k = 8;
-    let segments = segment_stream_bytes(stream, k);
-    if segments.len() < 2 {
-        return 0.0;
-    }
-
-    let mut ncd_values = Vec::new();
-    let mut c_a_list = Vec::new();
-    let mut c_b_list = Vec::new();
-    let mut c_ab_list = Vec::new();
-
-    for i in 0..(segments.len() - 1) {
-        let a = segments[i];
-        let b = segments[i + 1];
-
-        let c_a = lz76_complexity_bytes_sam(a);
-        let c_b = lz76_complexity_bytes_sam(b);
-
-        if c_a <= 0.0 || c_b <= 0.0 {
-            continue;
-        }
-
-        let mut ab = Vec::with_capacity(a.len() + b.len());
-        ab.extend_from_slice(a);
-        ab.extend_from_slice(b);
-
-        let c_ab = lz76_complexity_bytes_sam(&ab);
-        let c_min = c_a.min(c_b);
-        let c_max = c_a.max(c_b);
-
-        let ncd = (c_ab - c_min) / c_max;
-
-        ncd_values.push(ncd);
-        c_a_list.push(c_a);
-        c_b_list.push(c_b);
-        c_ab_list.push(c_ab);
-    }
-
-    let m = ncd_values.len();
-    if m == 0 {
-        return 0.0;
-    }
-
-    // Use empirically determined values from calibration
-    // These should come from a config or constant
-    let expected = 0.849;  // Calibrated from random data
-    let sigma = 0.0020;      // Calibrated from random data
-    
-    let mean_ncd = ncd_values.iter().sum::<f64>() / (m as f64);
-    let standard_error = sigma / (m as f64).sqrt();
-    let stat = (mean_ncd - expected) / standard_error;
-    
-    // Two-tailed test
-    let p = 2.0 * (1.0 - normal_cdf(stat.abs()));
-    
-    // Sanitize to avoid floating point issues
-    let p = p.clamp(0.0, 1.0);
-
-    // -------------------------
-    // LOGGING
-    // -------------------------
-    {
-        let filename = format!(
-            "ncd_debug_{}_{}.csv",
-            thread_id,
-            sample_idx,
-        );
-
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&filename)
-            .unwrap();
-
-        if file.metadata().unwrap().len() == 0 {
-            writeln!(
-                file,
-                "thread_id,sample_idx,n,segments,m,mean_ncd,stat,p_value,c_a,c_b,c_ab,ncd_values"
-            ).unwrap();
-        }
-
-        writeln!(
-            file,
-            "{},{},{},{},{},{},{},{},{},{},{},{}",
-            thread_id,
-            sample_idx,
-            n,
-            segments.len(),
-            m,
-            mean_ncd,
-            stat,
-            p,
-            c_a_list.iter().map(|v| v.to_string()).collect::<Vec<_>>().join("|"),
-            c_b_list.iter().map(|v| v.to_string()).collect::<Vec<_>>().join("|"),
-            c_ab_list.iter().map(|v| v.to_string()).collect::<Vec<_>>().join("|"),
-            ncd_values.iter().map(|v| v.to_string()).collect::<Vec<_>>().join("|")
         ).unwrap();
     }
 
@@ -8003,9 +7853,8 @@ pub fn run_calibrations(thread_id: usize, sample: usize, stream: &mut BitByteStr
 	ripley_k_unified_test(stream, thread_id, sample, 1024, 32, 0.25);
 */
 
-ncd_test(stream, thread_id, sample);
-
-
+    let p: f64 = NCD_test(stream, thread_id, sample);
+	println!("{}", p);
 }
 
 
@@ -8230,13 +8079,8 @@ pub fn run_tests(thread_id: usize, stream: &mut BitByteStream) -> bool {
     let klg: GlobalAuditResult = global_uniformity_audit(thread_id, "kl_divergence", bucket);
 	scalar_rows.push(("kl_divergence".to_string(), klp, klg));
 	
-    println!("LZ76 segment similarity test");
-    let lsp = meta_test_wrapper(thread_id, "lz76_segment_similarity", stream, lz76_segment_similarity_test);
-    let lsg: GlobalAuditResult = global_uniformity_audit(thread_id, "lz76_segment_similarity", bucket);
-	scalar_rows.push(("lz76_segment_similarity".to_string(), lsp, lsg));
-	
     println!("NCD history test");
-    let ncp = meta_test_wrapper(thread_id, "ncd_test", stream, ncd_test);
+    let ncp = meta_test_wrapper(thread_id, "ncd_test", stream, NCD_test);
     let ncg: GlobalAuditResult = global_uniformity_audit(thread_id, "ncd_test", bucket);
 	scalar_rows.push(("ncd_test".to_string(), ncp, ncg));
 	
@@ -8375,305 +8219,6 @@ pub fn run_tests(thread_id: usize, stream: &mut BitByteStream) -> bool {
 }
 */
 
-/// Normalized Compression Distance test for randomness evaluation
-pub struct NCDTest {
-    /// Expected mean NCD for random data (calibrated)
-    expected_mean: f64,
-    /// Expected standard deviation for random data (calibrated)
-    expected_std: f64,
-    /// Minimum number of segment pairs needed
-    min_pairs: usize,
-}
-
-impl Default for NCDTest {
-    fn default() -> Self {
-        Self {
-            // These values should be calibrated for your specific LZ76 implementation
-            // Run calibration once and then hardcode these
-            expected_mean: 0.7825,
-            expected_std: 0.0020,
-            min_pairs: 30, // Need at least 30 pairs for CLT to work well
-        }
-    }
-}
-
-impl NCDTest {
-    /// Create a new NCD test with custom parameters
-    pub fn new(expected_mean: f64, expected_std: f64, min_pairs: usize) -> Self {
-        Self {
-            expected_mean,
-            expected_std,
-            min_pairs,
-        }
-    }
-    
-    /// Run the NCD test on a byte stream
-    pub fn test(&self, data: &[u8], segment_size: usize) -> f64 {
-        if data.len() < segment_size * 2 {
-            return 0.5; // Not enough data, return non-significant p-value
-        }
-        
-        // Split into segments
-        let segments: Vec<&[u8]> = data.chunks(segment_size).collect();
-        
-        // Calculate NCD for consecutive segment pairs
-        let mut ncd_values = Vec::with_capacity(segments.len() - 1);
-        
-        for i in 0..(segments.len() - 1) {
-            let a = segments[i];
-            let b = segments[i + 1];
-            
-            // Calculate complexities
-            let c_a = lz76_complexity(a);
-            let c_b = lz76_complexity(b);
-            
-            if c_a <= 0.0 || c_b <= 0.0 {
-                continue;
-            }
-            
-            // Concatenate for joint complexity
-            let mut ab = Vec::with_capacity(a.len() + b.len());
-            ab.extend_from_slice(a);
-            ab.extend_from_slice(b);
-            let c_ab = lz76_complexity(&ab);
-            
-            // Calculate NCD
-            let c_min = c_a.min(c_b);
-            let c_max = c_a.max(c_b);
-            let ncd = (c_ab - c_min) / c_max;
-            
-            // NCD should be between 0 and 1
-            if ncd >= 0.0 && ncd <= 1.0 {
-                ncd_values.push(ncd);
-            }
-        }
-        
-        let n = ncd_values.len();
-        if n < self.min_pairs {
-            return 0.5; // Not enough pairs for reliable test
-        }
-        
-        // Calculate mean NCD
-        let mean_ncd = ncd_values.iter().sum::<f64>() / n as f64;
-        
-        // Z-test
-        let standard_error = self.expected_std / (n as f64).sqrt();
-        let z = (mean_ncd - self.expected_mean) / standard_error;
-        
-        // Two-tailed p-value from normal distribution
-        let normal = Normal::new(0.0, 1.0).unwrap();
-        let p = 2.0 * (1.0 - normal.cdf(z.abs()));
-        
-        p.clamp(0.0, 1.0)
-    }
-    
-    /// Calibrate the test by running on known random data
-    pub fn calibrate(data_sets: &[&[u8]], segment_size: usize) -> Self {
-        let mut all_ncd_values = Vec::new();
-        let mut all_means = Vec::new();
-        
-        for &data in data_sets {
-            let segments: Vec<&[u8]> = data.chunks(segment_size).collect();
-            let mut ncd_values = Vec::new();
-            
-            for i in 0..(segments.len() - 1) {
-                let a = segments[i];
-                let b = segments[i + 1];
-                
-                let c_a = lz76_complexity(a);
-                let c_b = lz76_complexity(b);
-                
-                if c_a <= 0.0 || c_b <= 0.0 {
-                    continue;
-                }
-                
-                let mut ab = Vec::with_capacity(a.len() + b.len());
-                ab.extend_from_slice(a);
-                ab.extend_from_slice(b);
-                let c_ab = lz76_complexity(&ab);
-                
-                let c_min = c_a.min(c_b);
-                let c_max = c_a.max(c_b);
-                let ncd = (c_ab - c_min) / c_max;
-                
-                if ncd >= 0.0 && ncd <= 1.0 {
-                    ncd_values.push(ncd);
-                }
-            }
-            
-            if !ncd_values.is_empty() {
-                let mean = ncd_values.iter().sum::<f64>() / ncd_values.len() as f64;
-                all_means.push(mean);
-                all_ncd_values.extend(ncd_values);
-            }
-        }
-        
-        // Calculate expected mean (average of means)
-        let expected_mean = if !all_means.is_empty() {
-            all_means.iter().sum::<f64>() / all_means.len() as f64
-        } else {
-            0.7825 // Fallback
-        };
-        
-        // Calculate expected std (pooled standard deviation)
-        let expected_std = if !all_ncd_values.is_empty() {
-            let variance = all_ncd_values.iter()
-                .map(|&x| (x - expected_mean).powi(2))
-                .sum::<f64>() / all_ncd_values.len() as f64;
-            variance.sqrt()
-        } else {
-            0.0020 // Fallback
-        };
-        
-        Self {
-            expected_mean,
-            expected_std,
-            min_pairs: 30,
-        }
-    }
-}
-
-/// LZ76 complexity implementation (simplified version)
-fn lz76_complexity(data: &[u8]) -> f64 {
-    if data.is_empty() {
-        return 0.0;
-    }
-    
-    let n = data.len();
-    let mut complexity = 1.0;
-    let mut i = 0;
-    
-    while i < n {
-        let mut max_len = 0;
-        let mut max_pos = 0;
-        
-        // Look for the longest match in the history
-        for j in 0..i {
-            let mut len = 0;
-            while i + len < n && j + len < i && data[j + len] == data[i + len] {
-                len += 1;
-            }
-            if len > max_len {
-                max_len = len;
-                max_pos = j;
-            }
-        }
-        
-        if max_len > 0 {
-            i += max_len;
-        } else {
-            complexity += 1.0;
-            i += 1;
-        }
-    }
-    
-    complexity
-}
-
-/// Alternative: LZ76 complexity using the LZ78 parsing algorithm
-fn lz76_complexity_lz78(data: &[u8]) -> f64 {
-    if data.is_empty() {
-        return 0.0;
-    }
-    
-    let mut dictionary = Vec::new();
-    let mut current = Vec::new();
-    
-    for &byte in data {
-        current.push(byte);
-        
-        // Check if current sequence exists in dictionary
-        let mut found = false;
-        for seq in &dictionary {
-            if seq == &current {
-                found = true;
-                break;
-            }
-        }
-        
-        if !found {
-            dictionary.push(current.clone());
-            current.clear();
-        }
-    }
-    
-    // Add the last sequence if not empty
-    if !current.is_empty() {
-        dictionary.push(current);
-    }
-    
-    dictionary.len() as f64
-}
-
-/// Utility function to generate random data for testing
-pub fn generate_random_data(size: usize) -> Vec<u8> {
-    let mut rng = rand::thread_rng();
-    (0..size).map(|_| rng.gen()).collect()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    
-    #[test]
-    fn test_ncd_on_random_data() {
-        // Generate calibration data
-        let mut calibration_sets = Vec::new();
-        for _ in 0..10 {
-            calibration_sets.push(generate_random_data(1024 * 1024)); // 1MB each
-        }
-        let calibration_refs: Vec<&[u8]> = calibration_sets.iter().map(|v| v.as_slice()).collect();
-        
-        // Calibrate the test
-        let ncd_test = NCDTest::calibrate(&calibration_refs, 8);
-        
-        println!("Calibrated expected_mean: {}", ncd_test.expected_mean);
-        println!("Calibrated expected_std: {}", ncd_test.expected_std);
-        
-        // Test on new random data
-        let test_data = generate_random_data(1024 * 1024);
-        let p_value = ncd_test.test(&test_data, 8);
-        
-        println!("P-value on random data: {}", p_value);
-        
-        // For random data, p-value should typically be > 0.01
-        assert!(p_value > 0.01 || p_value < 0.99); // Not too extreme
-    }
-    
-    #[test]
-    fn test_ncd_on_non_random_data() {
-        let ncd_test = NCDTest::default();
-        
-        // Create non-random data (repeating pattern)
-        let mut non_random = Vec::with_capacity(1024 * 1024);
-        let pattern = [0x00, 0x01, 0x02, 0x03];
-        for i in 0..(1024 * 1024) {
-            non_random.push(pattern[i % 4]);
-        }
-        
-        let p_value = ncd_test.test(&non_random, 8);
-        println!("P-value on non-random data: {}", p_value);
-        
-        // Non-random data should have very low p-value
-        assert!(p_value < 0.05 || p_value > 0.95); // But could be either tail
-    }
-}
-
-// If you don't want to add statrs as a dependency, here's a simple normal CDF implementation:
-fn normal_cdf(x: f64) -> f64 {
-    // Approximation of the cumulative distribution function for N(0,1)
-    let t = 1.0 / (1.0 + 0.2316419 * x.abs());
-    let d = 0.3989423 * (-x * x / 2.0).exp();
-    let p = d * t * (0.3193815 + t * (-0.3565638 + t * (1.781478 + t * (-1.821256 + t * 1.330274))));
-    
-    if x > 0.0 {
-        1.0 - p
-    } else {
-        p
-    }
-}
-
-
 fn generate_random_bytes(rng: &mut ChaCha20Rng, len: usize) -> Vec<u8> {
     let mut buf = vec![0u8; len];
     rng.fill_bytes(&mut buf);
@@ -8685,24 +8230,8 @@ fn main() {
 
     for i in 0..1200 {
         let bytes = generate_random_bytes(&mut rng, 1024 * 1024);
-        let mut stream = BitByteStream::new_from_bytes(bytes);
-    
-	    // Step 1: Calibrate the test (do this once)
-        let calibration_data: Vec<Vec<u8>> = (0..20)
-           .map(|_| generate_random_bytes(&mut rng, 1024 * 1024))
-           .collect();
-        let calibration_refs: Vec<&[u8]> = calibration_data.iter().map(|v| v.as_slice()).collect();
-        let ncd_test = NCDTest::calibrate(&calibration_refs, 8);
-
-        println!("expected_mean: {}", ncd_test.expected_mean);
-        println!("expected_std: {}", ncd_test.expected_std);
-
-        // Step 2: Use in production
-        //let test_data = get_your_stream_data(); // Your byte stream
-        let p_value = ncd_test.test(&stream, 8);
-        println!("P-value: {}", p_value);
-	
-		//run_calibrations(0, 1, &mut stream);
+        let mut stream = BitByteStream::new_from_bytes(bytes);    	   	
+		run_calibrations(0, 1, &mut stream);
         //println!("running calibrations: {}", i);
     }
 }
