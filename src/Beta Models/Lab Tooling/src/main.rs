@@ -2860,7 +2860,7 @@ pub fn maurer_universal_byte_test(
     let sigma = c * (expected_variance / (count as f64)).sqrt();
     let z = (fn_val - expected) / sigma;
 
-    sanitize_p(erfc(z.abs() / 2.0f64.sqrt()));    
+    sanitize_p(erfc(z.abs() / 2.0f64.sqrt()))
 }
 
 // ------------------------------------------------------------------------------------------------------
