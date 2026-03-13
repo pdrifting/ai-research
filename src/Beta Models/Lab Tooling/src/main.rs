@@ -15,7 +15,7 @@ use rand_chacha::ChaCha20Rng;
 use core::f64::consts::PI;
 use std::fs::OpenOptions;
 use std::io::Write;
-use std::f64::consts::SQRT_2;
+//use std::f64::consts::SQRT_2;
 use statrs::distribution::{Normal, ContinuousCDF};
 
 use num_complex::Complex;
@@ -188,6 +188,28 @@ pub fn normal_cdf(x: f64) -> f64 {
 
     0.5 * (1.0 + sign as f64 * y)
 }
+
+/*
+/// Normal CDF using Abramowitz-Stegun approximation (accurate to 1.5e-7)
+fn normal_cdf(x: f64) -> f64 {
+    if x < -10.0 {
+        return 0.0;
+    }
+    if x > 10.0 {
+        return 1.0;
+    }
+    
+    let t = 1.0 / (1.0 + 0.2316419 * x.abs());
+    let d = 0.3989423 * (-x * x / 2.0).exp();
+    let p = d * t * (0.3193815 + t * (-0.3565638 + t * (1.781478 + t * (-1.821256 + t * 1.330274))));
+    
+    if x > 0.0 {
+        1.0 - p
+    } else {
+        p
+    }
+}
+*/
 
 // ---------------------------------------------------------------
 // Chi-square CDF (lower incomplete gamma approximation)
@@ -848,12 +870,6 @@ pub struct BitByteStream {
     pub martingale_start_idx: usize,
     pub martingale_scale: f64,
 	
-	// Unified SPRT drift test
-	pub sprt_use_windows: bool, 
-	pub sprt_window_size: usize,
-	pub sprt_step: usize,
-	pub sprt_scale: f64,
-	
 	// permutation entropy test
 	pub perm_d: usize,
     pub perm_min_n: usize,
@@ -1152,19 +1168,6 @@ impl BitByteStream {
         let martingale_scale = [5.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0][bucket];
 
         // -----------------------------------
-		// Unified SPRT drift test
-		// -----------------------------------
-        let (sprt_use_windows, sprt_window_size, sprt_step, sprt_scale) = match bucket {
-            0 => (false, byte_len, 1, 1.0),
-            1 => (false, 200, 100, 1.0),
-            2 => (true, 5000, 2500, 1.2),
-            3 => (true, 10000, 5000, 1.4),
-            4 => (true, 10000, 5000, 1.6),
-            5 => (true, 20000, 10000, 1.8),
-            _ => (true, 20000, 10000, 2.0),
-        };
-
-        // -----------------------------------
 		// Unified permutation entropy test
 		// -----------------------------------
         let perm_d = match bucket {
@@ -1248,10 +1251,6 @@ impl BitByteStream {
             martingale_strategy_count,
             martingale_start_idx,
             martingale_scale,
-	        sprt_use_windows, 
-	        sprt_window_size,
-	        sprt_step,
-	        sprt_scale,
             perm_d,
             perm_min_n,
             perm_expected,
@@ -2863,6 +2862,188 @@ pub fn maurer_universal_byte_test(
     sanitize_p(erfc(z.abs() / 2.0f64.sqrt()))
 }
 
+// ================================================================
+//  Gini Randomness Test (patched for multinomial correctness)
+// ================================================================
+
+/*
+Mean (average) = 0.497429971305
+n = 1200
+sum = 596.915965565737
+min = 0.000157260966
+max = 0.999374857888
+*/
+
+pub fn gini_randomness_test(
+    stream: &mut BitByteStream,
+    thread_id: usize,
+    sample_idx: usize
+) -> f64 {
+    let counts = &stream.byte_histogram;
+    let n = stream.byte_len as f64;
+
+    if n <= 0.0 {
+        return 0.5;
+    }
+
+    let mut sorted: Vec<usize> = counts.to_vec();
+    sorted.sort_unstable();
+
+    let k = 256.0;
+
+    let mut g_num = 0.0;
+    for (i, &c) in sorted.iter().enumerate() {
+        let idx = i as f64 + 1.0;
+        g_num += (2.0 * idx - k - 1.0) * (c as f64);
+    }
+    let g = g_num / (n * k);
+
+    let e_g = (k - 1.0) / (k * (k + 1.0));
+
+    let mut chi_square = 0.0;
+    let expected = n / k;
+    for &count in counts {
+        let diff = count as f64 - expected;
+        chi_square += diff * diff / expected;
+    }
+    
+    sanitize_p(1.0 - chi_square_cdf(chi_square, k - 1.0))
+}
+
+// ================================================================
+// Entropy Surface Curvature & Min-Entropy Validation
+// ================================================================
+
+/*
+let block_sizes = [256, 384, 512, 768, 1024];
+=== STREAM HEALTH GAUGE (AGGREGATED) ===
+Total Streams Evaluated: 30000
+PERFECT (0 Fails): 28817 streams ( 96.06%)
+SLIGHT  (1 Fail ):   911 streams (  3.04%)
+WARNING (2 Fails):   191 streams (  0.64%)
+SICK    (3 Fails):    63 streams (  0.21%)
+CRITICAL(4 Fails):    16 streams (  0.05%)
+COLLAPSE(5 Fails):     2 streams (  0.01%)
+
+TODO: hook up the health check report for each stream
+
+    let mut gauge = HealthGauge::new();
+
+    for _ in 0..1000 {
+        
+    	let mut p_values = Vec::new();
+        let block_sizes = [256, 384, 512, 768, 1024];
+
+        for &bs in &block_sizes {
+           let p = entropy_surface_curvature_test(&mut stream, 0, 1, bs);
+           p_values.push(p);
+        }
+
+        gauge.record_stream(&p_values);
+    }
+
+    // See the final calibration
+    gauge.print_gauge();
+*/
+
+pub fn entropy_surface_curvature_test(
+    stream: &mut BitByteStream,
+    thread_id: usize,
+    sample_idx: usize,
+    block_size: usize,
+) -> f64 {
+    let bytes = &stream.bytes;
+    let n = bytes.len();
+    if n < block_size * 5 { return 0.0; }
+
+    let expected_h = mean_entropy_from_block_size(block_size);
+   
+    let mut entropies: Vec<f64> = Vec::new();
+    let mut i = 0usize;
+    let mut min_h = f64::INFINITY;
+	let mut max_h = 0.0;
+
+    while i + block_size <= n {
+        let blk = &bytes[i..i + block_size];
+        let mut freq = [0usize; 256];
+        for &b in blk { freq[b as usize] += 1; }
+
+        let total = block_size as f64;
+        let mut h = 0.0;
+        for &count in freq.iter() {
+            if count > 0 {
+                let p = count as f64 / total;
+                h -= p * p.log2();
+            }
+        }
+        if h < min_h { min_h = h; }
+		if h > max_h { max_h = h; }
+        entropies.push(h);
+        i += block_size;
+    }
+
+    let m = entropies.len();
+    if m < 5 { return 0.0; }
+
+    let mut s = [0.0f64; 5]; 
+    let mut t = [0.0f64; 3]; 
+    let mut sum_h2 = 0.0;
+
+    for (idx, &h) in entropies.iter().enumerate() {
+        let x = idx as f64;
+        let x2 = x * x;
+        s[0] += 1.0; s[1] += x; s[2] += x2; s[3] += x2 * x; s[4] += x2 * x2;
+        t[0] += h; t[1] += x * h; t[2] += x2 * h;
+        sum_h2 += h * h;
+    }
+
+    let det = s[0] * (s[2] * s[4] - s[3] * s[3])
+            - s[1] * (s[1] * s[4] - s[2] * s[3])
+            + s[2] * (s[1] * s[3] - s[2] * s[2]);
+
+    if det.abs() < 1e-12 { return 0.0; }
+
+    let c = (s[0] * (s[2] * t[2] - t[1] * s[3])
+           - s[1] * (s[1] * t[2] - t[1] * s[2])
+           + t[0] * (s[1] * s[3] - s[2] * s[2])) / det;
+
+    let mean_h = t[0] / m as f64;
+    // Floor the variance (0.0001) to avoid hyper-sensitivity.
+    let var_h = (sum_h2 / m as f64 - mean_h * mean_h).max(0.0001);
+    let se_c = (var_h * ((s[0] * s[2] - s[1] * s[1]) / det).abs()).sqrt();
+    
+    let z = c / se_c;
+    let p_curve: f64 = 1.0 - erf(z.abs() / 2.0f64.sqrt());
+
+    // The tripwire is set to 95% of the expected entropy for this block size.
+    // This catches the "string fails" you mentioned without flagging the "deficit".
+    let tripwire_threshold = expected_h * 0.90625;
+    let p_min = if min_h < tripwire_threshold {
+        // Linearly penalize until it hits 0.0 at 90% of expected
+        //((min_h - (expected_h * 0.9)) / (expected_h * 0.05)).clamp(0.0)
+		// overriding to auto fail anything that drops below 95%
+		0.0
+    } else {
+        1.0
+    };
+
+    let final_p = p_curve.min(p_min);
+
+    
+    {
+        let log_name = format!("entropy_audit_t{}_{}.csv", thread_id,block_size);
+        let mut file = OpenOptions::new().create(true).append(true).open(&log_name).unwrap();
+        if file.metadata().unwrap().len() == 0 {
+            writeln!(file, "block_size,expected_h,mean_h,min_h,z_score,p_curve,p_min,final_p").unwrap();
+        }
+        writeln!(file, "{},{},{:.4},{:.4},{:.4},{:.4},{:.6},{:.6},{:.6}",
+            block_size, expected_h, mean_h, max_h, min_h, z, p_curve, p_min, final_p).unwrap();
+    }
+    
+	
+    final_p
+}
+
 // ------------------------------------------------------------------------------------------------------
 // ------------------------------------------------------------------------------------------------------
 // ------------------------------------------------------------------------------------------------------
@@ -3344,10 +3525,7 @@ pub fn sprt_drift_unified_test(stream: &mut BitByteStream) -> f64 {
 }
 */
 
-// ================================================================
-//  SPRT Global Drift Test — with debug logging
-// ================================================================
-pub fn sprt_drift_global_test(
+pub fn bitflip_sensitivity_test(
     stream: &mut BitByteStream,
     thread_id: usize,
     sample_idx: usize
@@ -3357,34 +3535,68 @@ pub fn sprt_drift_global_test(
 
     let bits = &stream.bits;
     let n = bits.len();
-    let scale = stream.sprt_scale;
 
-    let log_p0 = (0.5f64).ln();
-
-    let filename = format!(
-        "sprt_drift_debug_{}_{}.csv",
-        thread_id,
-        sample_idx,
-    );
-
-    let count_1 = bits.iter().filter(|&&b| b == 1).count();
-    let p_hat = (count_1 as f64) / (n as f64);
-
-    if p_hat <= 0.0 || p_hat >= 1.0 {
-        return 0.0;
+    if n < 1024 {
+        return 1.0; // not enough data
     }
 
-    let mut llr = 0.0;
-    for &b in bits {
-        let p1 = if b == 1 { p_hat } else { 1.0 - p_hat };
-        llr += p1.ln() - log_p0;
+    // ------------------------------------------------------------
+    // 1. Construct a 1-bit-flipped version of the stream
+    // ------------------------------------------------------------
+    let mut flipped = bits.clone();
+    flipped[0] ^= 1; // flip the first bit (you can randomize later)
+
+    // ------------------------------------------------------------
+    // 2. Compute cross-correlation between original and flipped
+    // ------------------------------------------------------------
+    let mut sum_xy = 0.0;
+    let mut sum_x = 0.0;
+    let mut sum_y = 0.0;
+
+    for i in 0..n {
+        let x = bits[i] as f64;
+        let y = flipped[i] as f64;
+        sum_xy += x * y;
+        sum_x += x;
+        sum_y += y;
     }
 
-    let stat = llr.abs() / (n as f64).sqrt() * scale;
-    let p = (2.0 * (1.0 - normal_cdf(stat))).clamp(0.0, 1.0);
+    let mean_x = sum_x / n as f64;
+    let mean_y = sum_y / n as f64;
 
-    // ---- LOGGING ----
+    let mut num = 0.0;
+    let mut den_x = 0.0;
+    let mut den_y = 0.0;
+
+    for i in 0..n {
+        let dx = bits[i] as f64 - mean_x;
+        let dy = flipped[i] as f64 - mean_y;
+        num += dx * dy;
+        den_x += dx * dx;
+        den_y += dy * dy;
+    }
+
+    let corr = num / (den_x.sqrt() * den_y.sqrt());
+
+    // ------------------------------------------------------------
+    // 3. Convert correlation → z-score → p-value
+    // ------------------------------------------------------------
+    // Under null: corr ~ Normal(0, 1/sqrt(n))
+    let std_null = 1.0 / (n as f64).sqrt();
+    let z = corr / std_null;
+
+    let raw_p = 2.0 * (1.0 - normal_cdf(z.abs()));
+    let p = sanitize_p(raw_p);
+
+    // ------------------------------------------------------------
+    // 4. Logging (same format as your SPRT tests)
+    // ------------------------------------------------------------
     {
+        let filename = format!(
+            "bitflip_sensitivity_debug_{}_{}.csv",
+            thread_id, sample_idx
+        );
+
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
@@ -3394,7 +3606,7 @@ pub fn sprt_drift_global_test(
         if file.metadata().unwrap().len() == 0 {
             writeln!(
                 file,
-                "thread_id,sample_idx,mode,n,p_hat,llr,stat,p_value"
+                "thread_id,sample_idx,mode,n,corr,z_score,raw_p,p_value"
             ).unwrap();
         }
 
@@ -3403,11 +3615,111 @@ pub fn sprt_drift_global_test(
             "{},{},{},{},{},{},{},{}",
             thread_id,
             sample_idx,
-            "global",
+            "bitflip_sensitivity",
             n,
-            p_hat,
-            llr,
-            stat,
+            corr,
+            z,
+            raw_p,
+            p
+        ).unwrap();
+    }
+
+    p
+}
+
+// ================================================================
+//  SPRT Global Drift Test
+// ================================================================
+pub fn sprt_drift_global_test(
+    stream: &mut BitByteStream,
+    thread_id: usize,
+    sample_idx: usize
+) -> f64 {
+    let bits = &stream.bits;
+    let n = bits.len();
+    
+    if n < 1000 {
+        return 0.5; // Not enough data
+    }
+    
+    // SPRT parameters
+    let p0: f64 = 0.5;           // Null hypothesis: fair coin
+    let delta: f64 = 0.0001;       // Effect size to detect (1% bias)
+    let p1: f64 = 0.5 + delta;   // Alternative: bias towards 1s
+    let p2: f64 = 0.5 - delta;   // Alternative: bias towards 0s
+    
+    // Log-likelihood ratios
+    let llr_pos_1 = (p1 / p0).ln();           // P(1|H1) / P(1|H0)
+    let llr_pos_0 = ((1.0 - p1) / (1.0 - p0)).ln(); // P(0|H1) / P(0|H0)
+    
+    let llr_neg_1 = (p2 / p0).ln();           // P(1|H2) / P(1|H0)
+    let llr_neg_0 = ((1.0 - p2) / (1.0 - p0)).ln(); // P(0|H2) / P(0|H0)
+    
+    // Initialize SPRT statistics
+    let mut sprt_pos: f64 = 0.0;  // Evidence for positive bias
+    let mut sprt_neg: f64 = 0.0;  // Evidence for negative bias
+    let mut max_sprt: f64 = 0.0;
+    
+    // Sequential testing through the data
+    for &b in bits {
+        if b == 1 {
+            sprt_pos += llr_pos_1;
+            sprt_neg += llr_neg_1;
+        } else {
+            sprt_pos += llr_pos_0;
+            sprt_neg += llr_neg_0;
+        }
+        
+        // Track the maximum deviation (for drift detection)
+        max_sprt = max_sprt.max(sprt_pos.abs()).max(sprt_neg.abs());
+    }
+    
+    // Under null, SPRT statistics are approximately normal
+    // with mean 0 and variance n * I, where I is Fisher information
+    let fisher_info = p0 * (1.0 - p0) * (llr_pos_1 - llr_pos_0).powi(2);
+    let expected_sprt = 0.0;
+    let std_dev = (n as f64 * fisher_info).sqrt();
+    
+    // Convert max SPRT to p-value (two-tailed)
+    let z = (max_sprt - expected_sprt) / std_dev;
+    let raw_p = 2.0 * (1.0 - normal_cdf(z));
+    
+    // Apply your calibrated scale factor
+    let scale = 3.75;
+    let p = (raw_p * scale).min(1.0).max(0.0);
+    
+    // ---- LOGGING ----
+    {
+        let filename = format!(
+            "sprt_drift_global_debug_{}_{}.csv",
+            thread_id, sample_idx
+        );
+
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&filename)
+            .unwrap();
+
+        if file.metadata().unwrap().len() == 0 {
+            writeln!(
+                file,
+                "thread_id,sample_idx,mode,n,delta,max_sprt,fisher_info,z_score,raw_p,p_value"
+            ).unwrap();
+        }
+
+        writeln!(
+            file,
+            "{},{},{},{},{},{},{},{},{},{}",
+            thread_id,
+            sample_idx,
+            "sprt_global",
+            n,
+            delta,
+            max_sprt,
+            fisher_info,
+            z,
+            raw_p,
             p
         ).unwrap();
     }
@@ -3418,94 +3730,84 @@ pub fn sprt_drift_global_test(
 // ================================================================
 //  SPRT Sliding-Window Drift Test — with debug logging
 // ================================================================
+
+/*
+        // -----------------------------------
+		// Unified SPRT drift test
+		// -----------------------------------
+        let (sprt_window_size, sprt_scale) = match bucket {
+            0 => (200, 1.0),
+            1 => (200, 1.0),
+            2 => (5000, 1.2),
+            3 => (10000, 1.4),
+            4 => (10000, 1.6),
+            5 => (20000, 1.8),
+            _ => (20000, 2.0),
+        };
+*/
+
 pub fn sprt_drift_window_test(
     stream: &mut BitByteStream,
     thread_id: usize,
     sample_idx: usize
 ) -> f64 {
-    use std::fs::OpenOptions;
-    use std::io::Write;
-
     let bits = &stream.bits;
     let n = bits.len();
-    let window_size = stream.sprt_window_size;
-
-    // ---- FIX: prevent step_by(0) panic ----
-    let step = 1;
-
-    let scale = stream.sprt_scale;
-    let log_p0 = (0.5f64).ln();
-
-    let filename = format!(
-        "sprt_drift_debug_{}_{}.csv",
-        thread_id,
-        sample_idx,
-    );
-
+    let window_size = 10000;
+    let step = 2000;
+    let scale = 1.3;
+    
     if n < window_size {
-        return 0.0;
+        return 0.5;
     }
-
-    let mut max_stat = 0.0;
-    let mut window_stats = Vec::new();
-
+    
+    let mut window_z_scores = Vec::new();
+    
     for i in (0..n - window_size).step_by(step) {
         let window = &bits[i..i + window_size];
-        let c1 = window.iter().filter(|&&b| b == 1).count();
-        let ph = (c1 as f64) / (window_size as f64);
-
-        if ph <= 0.01 || ph >= 0.99 {
-            // log degenerate window
-            {
-                let mut file = OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(&filename)
-                    .unwrap();
-
-                if file.metadata().unwrap().len() == 0 {
-                    writeln!(
-                        file,
-                        "thread_id,sample_idx,mode,n,window_size,step,stat,p_value,info"
-                    ).unwrap();
-                }
-
-                writeln!(
-                    file,
-                    "{},{},{},{},{},{},{},{},{}",
-                    thread_id,
-                    sample_idx,
-                    "window",
-                    n,
-                    window_size,
-                    step,
-                    0.0,
-                    0.0,
-                    "degenerate_ph"
-                ).unwrap();
-            }
-
-            return 0.0;
-        }
-
-        let mut llr = 0.0;
-        for &b in window {
-            let p1 = if b == 1 { ph } else { 1.0 - ph };
-            llr += p1.ln() - log_p0;
-        }
-
-        let stat = llr.abs() / (window_size as f64).sqrt();
-        window_stats.push(stat);
-
-        if stat > max_stat {
-            max_stat = stat;
-        }
+        let ones = window.iter().filter(|&&b| b == 1).count();
+        let p_hat = ones as f64 / window_size as f64;
+        
+        // Z-score for this window
+        let se = 0.5 / (window_size as f64).sqrt();
+        let z = (p_hat - 0.5).abs() / se;
+        window_z_scores.push(z);
     }
-
-    let p = sanitize_p(2.0 * (1.0 - normal_cdf(max_stat * scale)));
-
+    
+    if window_z_scores.is_empty() {
+        return 0.5;
+    }
+    
+    let n_windows = window_z_scores.len();
+    let max_z = window_z_scores.iter().fold(0.0, |a: f64, &b| a.max(b));
+    
+    // Use the Gumbel distribution (extreme value theory)
+    // For standard normal maxima, the CDF is exp(-exp(-(x - μ)/β))
+    // where μ ≈ sqrt(2*log(n)) - (log(log(n)) + log(4π))/(2*sqrt(2*log(n)))
+    // and β ≈ 1/sqrt(2*log(n))
+    
+    let log_n = (n_windows as f64).ln();
+    let sqrt_2log_n = (2.0 * log_n).sqrt();
+    
+    let mu = sqrt_2log_n - (log_n.ln() + (4.0 * std::f64::consts::PI).ln()) / (2.0 * sqrt_2log_n);
+    let beta = 1.0 / sqrt_2log_n;
+    
+    // Gumbel CDF: exp(-exp(-(max_z - mu)/beta))
+    let gumbel_p = (-(-(max_z - mu) / beta).exp()).exp();
+    
+    // Convert to p-value (probability of seeing a max this large or larger)
+    let raw_p = 1.0 - gumbel_p;
+    
+    // Apply scale and clamp
+    let p = (raw_p * scale).min(1.0).max(0.0);
+    
     // ---- LOGGING ----
     {
+        let filename = format!(
+            "sprt_drift_window_debug_{}_{}.csv",
+            thread_id, sample_idx
+        );
+
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
@@ -3515,23 +3817,26 @@ pub fn sprt_drift_window_test(
         if file.metadata().unwrap().len() == 0 {
             writeln!(
                 file,
-                "thread_id,sample_idx,mode,n,window_size,step,max_stat,scale,p_value,window_stats"
+                "thread_id,sample_idx,mode,n,window_size,step,n_windows,max_z,mu,beta,gumbel_p,raw_p,p_value"
             ).unwrap();
         }
 
         writeln!(
             file,
-            "{},{},{},{},{},{},{},{},{},{}",
+            "{},{},{},{},{},{},{},{},{},{},{},{},{}",
             thread_id,
             sample_idx,
-            "window",
+            "window_extreme",
             n,
             window_size,
             step,
-            max_stat,
-            scale,
-            p,
-            window_stats.iter().map(|v| v.to_string()).collect::<Vec<_>>().join("|")
+            n_windows,
+            max_z,
+            mu,
+            beta,
+            gumbel_p,
+            raw_p,
+            p
         ).unwrap();
     }
 
@@ -4773,123 +5078,6 @@ pub fn entropy_conditional_test(
             stat,
             p,
             cond_entropies.iter().map(|v| v.to_string()).collect::<Vec<_>>().join("|")
-        ).unwrap();
-    }
-
-    p
-}
-
-/*
-// ================================================================
-//  Gini Randomness Index Test
-// ================================================================
-pub fn gini_randomness_test(stream: &mut BitByteStream) -> f64 {
-    let counts = &stream.byte_histogram;    
-    let n = stream.byte_len as f64;
-
-    let mut probs = [0.0f64; 256];
-    for i in 0..256 {
-        probs[i] = counts[i] as f64 / n;
-    }
-
-    let mut sorted = probs;
-    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
-
-    let mut gini_num = 0.0;
-    for (i, p) in sorted.iter().enumerate() {
-        let idx = i as f64 + 1.0;
-        gini_num += (2.0 * idx - 257.0) * p;
-    }
-    
-    sanitize_p(1.0 - normal_cdf((gini_num / 255.0).abs() * (n.sqrt())))    
-}
-*/
-
-// -------------------------------------------------------------
-//  Gini Randomness Test (patched for multinomial correctness)
-//  - Correct expected value for discrete uniform
-//  - Correct variance for multinomial histogram
-//  - Integer-stable Gini computation
-//  - Full debug logging
-// -------------------------------------------------------------
-pub fn gini_randomness_test(
-    stream: &mut BitByteStream,
-    thread_id: usize,
-    sample_idx: usize
-) -> f64 {
-    use std::fs::OpenOptions;
-    use std::io::Write;
-
-    let counts = &stream.byte_histogram;
-    let n = stream.byte_len as f64;
-
-    if n <= 0.0 {
-        return 0.5;
-    }
-
-    // ---- Sort counts (not probabilities) ----
-    let mut sorted: Vec<usize> = counts.to_vec();
-    sorted.sort_unstable();
-
-    let k = 256.0;
-
-    // ---- Compute Gini using integer counts ----
-    // G = (1/(n*k)) * sum_i ( (2*i - k - 1) * count_i )
-    let mut g_num = 0.0;
-    for (i, &c) in sorted.iter().enumerate() {
-        let idx = i as f64 + 1.0;
-        g_num += (2.0 * idx - k - 1.0) * (c as f64);
-    }
-    let g = g_num / (n * k);
-
-    // ---- Correct expected value for multinomial ----
-    // E[G] = (k - 1) / (k * (k + 1))
-    let e_g = (k - 1.0) / (k * (k + 1.0));
-
-    // ---- Correct variance for multinomial histogram ----
-    // Var(G) = [2(k-1)] / [k^2 (k+1)(k+2)] * (1/n)
-    let var_g = (2.0 * (k - 1.0)) / (k * k * (k + 1.0) * (k + 2.0)) * (1.0 / n);
-
-    let z = if var_g > 0.0 {
-        (g - e_g) / var_g.sqrt()
-    } else {
-        0.0
-    };
-
-    let p = sanitize_p(1.0 - normal_cdf(z.abs()));
-
-    // ---- Logging ----
-    {
-        let filename = format!("gini_debug_{}_{}.csv", thread_id, sample_idx);
-
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&filename)
-            .unwrap();
-
-        if file.metadata().unwrap().len() == 0 {
-            writeln!(
-                file,
-                "thread_id,sample_idx,n,g,e_g,var_g,z,p_value,sorted_counts"
-            ).unwrap();
-        }
-
-        writeln!(
-            file,
-            "{},{},{},{},{},{},{},{},{}",
-            thread_id,
-            sample_idx,
-            n,
-            g,
-            e_g,
-            var_g,
-            z,
-            p,
-            sorted.iter()
-                .map(|v| v.to_string())
-                .collect::<Vec<_>>()
-                .join("|")
         ).unwrap();
     }
 
@@ -7282,304 +7470,7 @@ pub fn ripley_k_unified_test(
     p
 }
 
-// ================================================================
-// Entropy Surface Curvature & Min-Entropy Validation
-// ================================================================
-
-/*
-let block_sizes = [256, 384, 512, 768, 1024];
-=== STREAM HEALTH GAUGE (AGGREGATED) ===
-Total Streams Evaluated: 30000
-PERFECT (0 Fails): 28817 streams ( 96.06%)
-SLIGHT  (1 Fail ):   911 streams (  3.04%)
-WARNING (2 Fails):   191 streams (  0.64%)
-SICK    (3 Fails):    63 streams (  0.21%)
-CRITICAL(4 Fails):    16 streams (  0.05%)
-COLLAPSE(5 Fails):     2 streams (  0.01%)
-
-TODO: hook up the health check report for each stream
-
-    let mut gauge = HealthGauge::new();
-
-    for _ in 0..1000 {
-        
-    	let mut p_values = Vec::new();
-        let block_sizes = [256, 384, 512, 768, 1024];
-
-        for &bs in &block_sizes {
-           let p = entropy_surface_curvature_test(&mut stream, 0, 1, bs);
-           p_values.push(p);
-        }
-
-        gauge.record_stream(&p_values);
-    }
-
-    // See the final calibration
-    gauge.print_gauge();
-*/
-
-pub fn entropy_surface_curvature_test(
-    stream: &mut BitByteStream,
-    thread_id: usize,
-    sample_idx: usize,
-    block_size: usize,
-) -> f64 {
-    let bytes = &stream.bytes;
-    let n = bytes.len();
-    if n < block_size * 5 { return 0.0; }
-
-    let expected_h = mean_entropy_from_block_size(block_size);
-   
-    let mut entropies: Vec<f64> = Vec::new();
-    let mut i = 0usize;
-    let mut min_h = f64::INFINITY;
-	let mut max_h = 0.0;
-
-    while i + block_size <= n {
-        let blk = &bytes[i..i + block_size];
-        let mut freq = [0usize; 256];
-        for &b in blk { freq[b as usize] += 1; }
-
-        let total = block_size as f64;
-        let mut h = 0.0;
-        for &count in freq.iter() {
-            if count > 0 {
-                let p = count as f64 / total;
-                h -= p * p.log2();
-            }
-        }
-        if h < min_h { min_h = h; }
-		if h > max_h { max_h = h; }
-        entropies.push(h);
-        i += block_size;
-    }
-
-    let m = entropies.len();
-    if m < 5 { return 0.0; }
-
-    let mut s = [0.0f64; 5]; 
-    let mut t = [0.0f64; 3]; 
-    let mut sum_h2 = 0.0;
-
-    for (idx, &h) in entropies.iter().enumerate() {
-        let x = idx as f64;
-        let x2 = x * x;
-        s[0] += 1.0; s[1] += x; s[2] += x2; s[3] += x2 * x; s[4] += x2 * x2;
-        t[0] += h; t[1] += x * h; t[2] += x2 * h;
-        sum_h2 += h * h;
-    }
-
-    let det = s[0] * (s[2] * s[4] - s[3] * s[3])
-            - s[1] * (s[1] * s[4] - s[2] * s[3])
-            + s[2] * (s[1] * s[3] - s[2] * s[2]);
-
-    if det.abs() < 1e-12 { return 0.0; }
-
-    let c = (s[0] * (s[2] * t[2] - t[1] * s[3])
-           - s[1] * (s[1] * t[2] - t[1] * s[2])
-           + t[0] * (s[1] * s[3] - s[2] * s[2])) / det;
-
-    let mean_h = t[0] / m as f64;
-    // Floor the variance (0.0001) to avoid hyper-sensitivity.
-    let var_h = (sum_h2 / m as f64 - mean_h * mean_h).max(0.0001);
-    let se_c = (var_h * ((s[0] * s[2] - s[1] * s[1]) / det).abs()).sqrt();
-    
-    let z = c / se_c;
-    let p_curve: f64 = 1.0 - erf(z.abs() / 2.0f64.sqrt());
-
-    // The tripwire is set to 95% of the expected entropy for this block size.
-    // This catches the "string fails" you mentioned without flagging the "deficit".
-    let tripwire_threshold = expected_h * 0.90625;
-    let p_min = if min_h < tripwire_threshold {
-        // Linearly penalize until it hits 0.0 at 90% of expected
-        //((min_h - (expected_h * 0.9)) / (expected_h * 0.05)).clamp(0.0)
-		// overriding to auto fail anything that drops below 95%
-		0.0
-    } else {
-        1.0
-    };
-
-    let final_p = p_curve.min(p_min);
-
-    
-    {
-        let log_name = format!("entropy_audit_t{}_{}.csv", thread_id,block_size);
-        let mut file = OpenOptions::new().create(true).append(true).open(&log_name).unwrap();
-        if file.metadata().unwrap().len() == 0 {
-            writeln!(file, "block_size,expected_h,mean_h,min_h,z_score,p_curve,p_min,final_p").unwrap();
-        }
-        writeln!(file, "{},{},{:.4},{:.4},{:.4},{:.4},{:.6},{:.6},{:.6}",
-            block_size, expected_h, mean_h, max_h, min_h, z, p_curve, p_min, final_p).unwrap();
-    }
-    
-	
-    final_p
-}
-
-// ================================================================
-//  Birthday Spacing Test (32-bit words)
-//  - Uses m 32-bit values from the stream
-//  - Sorts them, computes spacings (with wrap-around)
-//  - Counts spacing collisions
-//  - Models collisions as Poisson(λ) with λ ≈ m^3 / (4n)
-//  - Full debug logging
-// ================================================================
-pub fn birthday_spacing_unified_test(
-    stream: &mut BitByteStream,
-    thread_id: usize,
-    sample_idx: usize,
-    m: usize, // number of points, e.g. 512..4096
-) -> f64 {
-    let bytes = &stream.bytes;
-    if bytes.len() < m * 4 {
-        return 0.0;
-    }
-
-    // ------------------------------------------------------------
-    // Extract m 32-bit words
-    // ------------------------------------------------------------
-    let mut vals: Vec<u32> = Vec::with_capacity(m);
-    let mut idx = 0usize;
-    for _ in 0..m {
-        let v = ((bytes[idx] as u32) << 24)
-            | ((bytes[idx + 1] as u32) << 16)
-            | ((bytes[idx + 2] as u32) << 8)
-            | (bytes[idx + 3] as u32);
-        vals.push(v);
-        idx += 4;
-    }
-
-    vals.sort_unstable();
-
-    // ------------------------------------------------------------
-    // Compute spacings with wrap-around
-    // ------------------------------------------------------------
-    let n_space: u64 = 1u64 << 32;
-    let mut spacings: Vec<u64> = Vec::with_capacity(m);
-
-    for i in 0..(m - 1) {
-        let d = (vals[i + 1] as u64).wrapping_sub(vals[i] as u64) & (n_space - 1);
-        spacings.push(d);
-    }
-    // wrap-around spacing
-    let d_last = (vals[0] as u64)
-        .wrapping_add(n_space)
-        .wrapping_sub(vals[m - 1] as u64)
-        & (n_space - 1);
-    spacings.push(d_last);
-
-    // ------------------------------------------------------------
-    // Count spacing collisions
-    // ------------------------------------------------------------
-    let mut freq: HashMap<u64, usize> = HashMap::new();
-    for s in &spacings {
-        *freq.entry(*s).or_insert(0) += 1;
-    }
-
-    let mut collisions = 0usize;
-    for &c in freq.values() {
-        if c > 1 {
-            collisions += c - 1;
-        }
-    }
-
-    // ------------------------------------------------------------
-    // Poisson model: λ ≈ m^3 / (4n)
-//  n = 2^32 here
-    // ------------------------------------------------------------
-    let m_f = m as f64;
-    let n_f = n_space as f64;
-    let lambda = m_f * m_f * m_f / (4.0 * n_f);
-
-    let k = collisions as u32;
-    let p = {
-        let cdf: f64 = poisson_cdf(k, lambda);
-        // two-sided-ish: use tail closest to 0
-        let tail = (1.0 - cdf).min(cdf);
-        sanitize_p(2.0 * tail)
-    };
-
-    // ------------------------------------------------------------
-    // DEBUG LOGGING
-    // ------------------------------------------------------------
-    {
-        let filename = format!(
-            "birthday_spacing_debug_{}_{}_{}.csv",
-            thread_id,
-            sample_idx,
-			m,
-        );
-
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&filename)
-            .unwrap();
-
-        if file.metadata().unwrap().len() == 0 {
-            writeln!(
-                file,
-                "thread_id,sample_idx,m,lambda,collisions,p_value,first_vals,first_spacings,spacing_freq_sample"
-            )
-            .unwrap();
-        }
-
-        let first_vals: Vec<String> = vals
-            .iter()
-            .take(16)
-            .map(|v| v.to_string())
-            .collect();
-
-        let first_spacings: Vec<String> = spacings
-            .iter()
-            .take(16)
-            .map(|v| v.to_string())
-            .collect();
-
-        let mut freq_sample: Vec<String> = Vec::new();
-        for (s, c) in freq.iter().take(32) {
-            freq_sample.push(format!("{}:{}", s, c));
-        }
-
-        writeln!(
-            file,
-            "{},{},{},{},{},{},{},{},{}",
-            thread_id,
-            sample_idx,
-            m,
-            lambda,
-            collisions,
-            p,
-            first_vals.join("|"),
-            first_spacings.join("|"),
-            freq_sample.join("|")
-        )
-        .unwrap();
-    }
-
-    p
-}
-
-pub fn poisson_cdf(k: u32, lambda: f64) -> f64 {
-    if lambda <= 0.0 {
-        return if k >= 0 { 1.0 } else { 0.0 };
-    }
-
-    let mut term = (-lambda).exp();
-    let mut sum = term;
-
-    for i in 1..=k {
-        term *= lambda / (i as f64);
-        sum += term;
-
-        if sum >= 1.0 { return 1.0; }
-    }
-
-    sum
-}
-
 // --------------------------------------------------------------------------------
-
 
 pub struct HealthGauge {
     pub total_streams: usize,
@@ -7702,8 +7593,6 @@ pub fn run_calibrations(thread_id: usize, sample: usize, stream: &mut BitByteStr
 	segment_clustering_scaling_test(stream, thread_id, sample);
 	wasserstein_drift_unified_test(stream, thread_id, sample);
 	martingale_betting_unified_test(stream, thread_id, sample);
-	sprt_drift_global_test(stream, thread_id, sample);
-	sprt_drift_window_test(stream, thread_id, sample);
 	snapshot_distance_matrix_unified_test(stream, thread_id, sample);
 		
 	let panels = [
@@ -7713,21 +7602,6 @@ pub fn run_calibrations(thread_id: usize, sample: usize, stream: &mut BitByteStr
 	];
 	
 	quadratic_character_multi_panel_test(stream, thread_id, sample, &panels);
-
-	birthday_spacing_unified_test(stream, thread_id, sample,32);
-	birthday_spacing_unified_test(stream, thread_id, sample,64);
-	birthday_spacing_unified_test(stream, thread_id, sample,128);
-	birthday_spacing_unified_test(stream, thread_id, sample,256);
-	birthday_spacing_unified_test(stream, thread_id, sample,512);
-	birthday_spacing_unified_test(stream, thread_id, sample,1024);
-	birthday_spacing_unified_test(stream, thread_id, sample,2048);
-	
-	
-	entropy_surface_curvature_test(stream, thread_id, sample,256);
-	entropy_surface_curvature_test(stream, thread_id, sample,384);
-	entropy_surface_curvature_test(stream, thread_id, sample,512);
-	entropy_surface_curvature_test(stream, thread_id, sample,768);
-	entropy_surface_curvature_test(stream, thread_id, sample,1024);
 	
 	ripley_k_unified_test(stream, thread_id, sample, 256, 16, 0.20);
 	ripley_k_unified_test(stream, thread_id, sample, 256, 16, 0.25);
@@ -7745,8 +7619,9 @@ pub fn run_calibrations(thread_id: usize, sample: usize, stream: &mut BitByteStr
 	ripley_k_unified_test(stream, thread_id, sample, 1024, 32, 0.25);
 */
 
-    gini_randomness_test(stream, thread_id, sample);
-
+    bitflip_sensitivity_test(stream, thread_id, sample);
+	//sprt_drift_global_test(stream, thread_id, sample);
+	//sprt_drift_window_test(stream, thread_id, sample);
 }
 
 
