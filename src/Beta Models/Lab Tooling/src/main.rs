@@ -6748,7 +6748,7 @@ pub fn run_calibrations(thread_id: usize, sample: usize, stream: &mut BitByteStr
 	permutation_pattern_unified_test(stream, thread_id, sample, 5);
 	permutation_pattern_unified_test(stream, thread_id, sample, 6);
     
-	parabolic_runlength_fit_test(stream, thread_id, sample);
+	
 	
     polynomial_autocorr_fit_test(stream, thread_id, sample, 32, 1);
 	polynomial_autocorr_fit_test(stream, thread_id, sample, 32, 2);
@@ -6796,11 +6796,8 @@ pub fn run_calibrations(thread_id: usize, sample: usize, stream: &mut BitByteStr
 	predictability_test(stream, thread_id, sample, 6, 3);
 	predictability_test(stream, thread_id, sample, 6, 4);
 	
-	permutation_entropy_unified_test(stream, thread_id, sample);
-	kl_divergence_byte_histogram_test(stream, thread_id, sample);
-	kl_divergence_matrix_test(stream, thread_id, sample);
-	entropy_conditional_test(stream, thread_id, sample);
-	sample_entropy_unified_test(stream, thread_id, sample);
+	
+	
 	d2_correlation_test(stream, thread_id, sample);
 	segment_clustering_scaling_test(stream, thread_id, sample);
 	
@@ -6819,6 +6816,11 @@ pub fn run_calibrations(thread_id: usize, sample: usize, stream: &mut BitByteStr
 	ripley_k_unified_test(stream, thread_id, sample, 1024, 32, 0.20);
 	ripley_k_unified_test(stream, thread_id, sample, 1024, 32, 0.25);
 */
+    entropy_conditional_test(stream, thread_id, sample);
+    sample_entropy_unified_test(stream, thread_id, sample);
+    kl_divergence_byte_histogram_test(stream, thread_id, sample);
+	kl_divergence_matrix_test(stream, thread_id, sample);
+	
 
     wasserstein_drift_unified_test(stream, thread_id, sample);
 	
@@ -6830,12 +6832,27 @@ pub fn run_calibrations(thread_id: usize, sample: usize, stream: &mut BitByteStr
 	
 	quadratic_character_multi_panel_test(stream, thread_id, sample, &panels);
 
+    parabolic_runlength_fit_test(stream, thread_id, sample);
+
 	bicoherence_proxy_test(stream, thread_id, sample, 32);
 	bicoherence_proxy_test(stream, thread_id, sample, 64);
 	bicoherence_proxy_test(stream, thread_id, sample, 128);
 	bicoherence_proxy_test(stream, thread_id, sample, 256);
 	bicoherence_proxy_test(stream, thread_id, sample, 512);
 	bicoherence_proxy_test(stream, thread_id, sample, 1024);
+	bicoherence_proxy_test(stream, thread_id, sample, 2048);
+	bicoherence_proxy_test(stream, thread_id, sample, 4096);
+	bicoherence_proxy_test(stream, thread_id, sample, 8192);
+	bicoherence_proxy_test(stream, thread_id, sample, 16368);
+	bicoherence_proxy_test(stream, thread_id, sample, 32768);
+	bicoherence_proxy_test(stream, thread_id, sample, 65536);
+	
+	permutation_entropy_unified_test(stream, thread_id, sample);	
+	spectral_csd_test(stream, thread_id, sample);
+	star_discrepancy_unified_test(stream, thread_id, sample);	
+	chaos_01_unified_test(stream, thread_id, sample);	
+	correlation_dimension_unified_test(stream, thread_id, sample);	
+	turning_point_test(stream, thread_id, sample);
 }
 
 
