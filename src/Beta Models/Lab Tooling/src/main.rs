@@ -3044,19 +3044,32 @@ pub fn entropy_surface_curvature_test(
     final_p
 }
 
-// ------------------------------------------------------------------------------------------------------
-// ------------------------------------------------------------------------------------------------------
-// ------------------------------------------------------------------------------------------------------
-// ------------------------------------------------------------------------------------------------------
-// ------------------------------------------------------------------------------------------------------
-// ------------------------------------------------------------------------------------------------------
-// CALIBRATION FUNCTIONS FOLLOW!!!!!!!!!!!!!!!!!!!!!!!
-// ------------------------------------------------------------------------------------------------------
-// ------------------------------------------------------------------------------------------------------
-// ------------------------------------------------------------------------------------------------------
-// ------------------------------------------------------------------------------------------------------
-// ------------------------------------------------------------------------------------------------------
-// ------------------------------------------------------------------------------------------------------
+// ================================================================
+//  KL Divergence Byte Histogram Tests (Byte-based)
+// ================================================================
+pub fn kl_divergence_byte_histogram_test(
+    stream: &mut BitByteStream,
+    thread_id: usize,
+    sample_idx: usize,
+) -> f64 {
+    let n = stream.byte_len;    
+    let n_f = n as f64;
+    let uniform_p = 1.0 / 256.0;
+    let mut kl = 0.0;    
+
+    for &c in &stream.byte_histogram {
+        if c > 0 {            
+            let p = c as f64 / n_f;
+            kl += p * (p / uniform_p).ln();
+        }
+    }
+
+    // Correct χ² approximation (no scale)
+    let chi = 2.0 * n_f * kl;    
+    let p = sanitize_p(1.0 - chi_square_cdf(chi, 255.0));
+
+    p
+}
 
 // ================================================================
 //  Multi-Panel Quadratic Character Balance Wrapper (debug enabled)
@@ -3065,9 +3078,11 @@ pub fn quadratic_character_multi_panel_test(
     stream: &mut BitByteStream,
     thread_id: usize,
     sample_idx: usize,
-    panels: &[(u32, usize)]   // e.g., &[(257,1), (65537,2), (4294967291,4)]
-) -> Vec<f64> {
-    let mut results = Vec::with_capacity(panels.len());
+    panels: &[(u64, usize)]
+) -> (f64, f64) {
+    let mut lowest = 1.0;
+    let mut sum = 0.0;
+    let mut count = 0.0;
 
     for (panel_idx, &(prime, word_size)) in panels.iter().enumerate() {
         let p = quadratic_character_balance_test_panel(
@@ -3078,10 +3093,18 @@ pub fn quadratic_character_multi_panel_test(
             prime,
             word_size,
         );
-        results.push(p);
+
+        if p < lowest {
+            lowest = p;
+        }
+
+        sum += p;
+        count += 1.0;
     }
 
-    results
+    let mean = if count > 0.0 { sum / count } else { 0.0 };
+
+    (lowest, mean)
 }
 
 // ================================================================
@@ -3092,7 +3115,7 @@ fn quadratic_character_balance_test_panel(
     thread_id: usize,
     sample_idx: usize,
     panel_idx: usize,
-    prime: u32,
+    prime: u64,
     word_size: usize,
 ) -> f64 {
     let bytes = &stream.bytes;
@@ -3107,24 +3130,25 @@ fn quadratic_character_balance_test_panel(
     let mut count_neg = 0usize;
     let mut count_zero = 0usize;
 
-    let mut debug_syms = Vec::new();
-    let mut word_index = 0usize;
-
     let mut i = 0usize;
     while i + word_size <= bytes.len() {
         let w = match word_size {
-            1 => bytes[i] as u32,
-            2 => ((bytes[i] as u32) << 8) | (bytes[i + 1] as u32),
-            4 => ((bytes[i] as u32) << 24)
-                | ((bytes[i + 1] as u32) << 16)
-                | ((bytes[i + 2] as u32) << 8)
-                | (bytes[i + 3] as u32),
+            2 => ((bytes[i] as u64) << 8)
+                |  (bytes[i + 1] as u64),
+            3 => ((bytes[i] as u64) << 16)
+                | ((bytes[i + 1] as u64) << 8)
+                |  (bytes[i + 2] as u64),
+            4 => ((bytes[i] as u64) << 24)
+                | ((bytes[i + 1] as u64) << 16)
+                | ((bytes[i + 2] as u64) << 8)
+                |  (bytes[i + 3] as u64),
             _ => break,
         };
+
         i += word_size;
 
-        let a = (w % prime) as u32;
-        let ls = if a == 0 { 0 } else { legendre_symbol_u32(a, prime) };
+        let a = (w % prime) as u64;
+        let ls = if a == 0 { 0 } else { legendre_symbol_u64(a, prime) };
 
         match ls {
             1 => count_pos += 1,
@@ -3132,119 +3156,33 @@ fn quadratic_character_balance_test_panel(
             0 => count_zero += 1,
             _ => {}
         }
-
-        if word_index < 16 {
-            debug_syms.push(ls.to_string());
-        }
-        word_index += 1;
     }
 
     let total_nonzero = count_pos + count_neg;
-    if total_nonzero == 0 {
-        log_quadratic_panel(
-            thread_id, sample_idx, panel_idx, prime, word_size,
-            count_pos, count_neg, count_zero, total_nonzero,
-            0.0, 0.0, 0.0, &debug_syms, "no_nonzero_symbols"
-        );
-        return 0.0;
-    }
+    if total_nonzero == 0 { return 0.0; }
+    println!("pos={count_pos}, neg={count_neg}, zero={count_zero}");
 
-    // -------------------------
-    // Chi-square
-    // -------------------------
     let expected = total_nonzero as f64 / 2.0;
     let chi2 =
         ((count_pos as f64 - expected).powi(2) / expected) +
         ((count_neg as f64 - expected).powi(2) / expected);
-
-    let df = 1.0;
-    let p = sanitize_p(1.0 - chi_square_cdf(chi2, df));
-
-    log_quadratic_panel(
-        thread_id, sample_idx, panel_idx, prime, word_size,
-        count_pos, count_neg, count_zero, total_nonzero,
-        expected, chi2, p, &debug_syms, "ok"
-    );
-
-    p
-}
-
-// ================================================================
-//  Debug logging helper
-// ================================================================
-fn log_quadratic_panel(
-    thread_id: usize,
-    sample_idx: usize,
-    panel_idx: usize,
-    prime: u32,
-    word_size: usize,
-    count_pos: usize,
-    count_neg: usize,
-    count_zero: usize,
-    total_nonzero: usize,
-    expected: f64,
-    chi2: f64,
-    p: f64,
-    debug_syms: &[String],
-    mode: &str,
-) {
-    let filename = format!(
-        "quadratic_character_multi_debug_{}_{}_{}_{}_{}.csv",
-        thread_id,
-        sample_idx,
-		panel_idx,
-		prime,		
-		word_size,
-    );
-	
-	let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&filename)
-        .unwrap();
-
-    if file.metadata().unwrap().len() == 0 {
-        writeln!(
-            file,
-            "thread_id,sample_idx,panel_idx,prime,word_size,\
-             count_pos,count_neg,count_zero,total_nonzero,\
-             expected,chi2,p_value,debug_syms,mode"
-        ).unwrap();
-    }
-
-    writeln!(
-        file,
-        "{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
-        thread_id,
-        sample_idx,
-        panel_idx,
-        prime,
-        word_size,
-        count_pos,
-        count_neg,
-        count_zero,
-        total_nonzero,
-        expected,
-        chi2,
-        p,
-        debug_syms.join("|"),
-        mode
-    ).unwrap();
+    
+    sanitize_p(1.0 - chi_square_cdf(chi2, 1.0))
 }
 
 // ================================================================
 //  Legendre symbol (a | p)
 // ================================================================
-fn legendre_symbol_u32(a: u32, p: u32) -> i32 {
+fn legendre_symbol_u64(a: u64, p: u64) -> i64 {
     let e = (p - 1) / 2;
-    let r = modexp_u32(a, e, p);
+    let r = modexp_u64(a, e, p);
     if r == 1 { 1 } else if r == 0 { 0 } else { -1 }
 }
 
 // ================================================================
 //  Modular exponentiation
 // ================================================================
-fn modexp_u32(a: u32, mut e: u32, m: u32) -> u32 {
+fn modexp_u64(a: u64, mut e: u64, m: u64) -> u64 {
     let mut r: u64 = 1;
     let mut base: u64 = (a % m) as u64;
     let modulus: u64 = m as u64;
@@ -3257,17 +3195,25 @@ fn modexp_u32(a: u32, mut e: u32, m: u32) -> u32 {
         e >>= 1;
     }
 
-    r as u32
+    r as u64
 }
 
-/*
-let pvals = quadratic_character_multi_panel_test(
-    stream,
-    thread_id,
-    sample_idx,
-    &panels
-);
-*/
+// ------------------------------------------------------------------------------------------------------
+// ------------------------------------------------------------------------------------------------------
+// ------------------------------------------------------------------------------------------------------
+// ------------------------------------------------------------------------------------------------------
+// ------------------------------------------------------------------------------------------------------
+// ------------------------------------------------------------------------------------------------------
+// CALIBRATION FUNCTIONS FOLLOW!!!!!!!!!!!!!!!!!!!!!!!
+// ------------------------------------------------------------------------------------------------------
+// ------------------------------------------------------------------------------------------------------
+// ------------------------------------------------------------------------------------------------------
+// ------------------------------------------------------------------------------------------------------
+// ------------------------------------------------------------------------------------------------------
+// ------------------------------------------------------------------------------------------------------
+
+
+
 
 
 
@@ -4296,132 +4242,6 @@ pub fn entropy_conditional_test(
             stat,
             p,
             cond_entropies.iter().map(|v| v.to_string()).collect::<Vec<_>>().join("|")
-        ).unwrap();
-    }
-
-    p
-}
-
-/*
-// ================================================================
-//  KL Divergence Rate Tests (Byte-based)
-//  Measures distributional distance from uniform
-//  Returns: p-value (f64)
-// ================================================================
-pub fn kl_divergence_unified_test(stream: &mut BitByteStream) -> f64 {
-    let n = stream.byte_len;
-    let scale = stream.kl_scale;
-
-    // ---------------------------------------------------------
-    // 0‑ORDER KL: BYTE HISTOGRAM (already precomputed)
-    // ---------------------------------------------------------
-    if !stream.use_transition_kl {
-        let n_f = n as f64;
-        let uniform_p = 1.0 / 256.0;
-
-        let mut kl = 0.0;
-        for &c in &stream.byte_histogram {
-            if c > 0 {
-                let p = c as f64 / n_f;
-                kl += p * (p / uniform_p).ln();
-            }
-        }
-
-        let chi = 2.0 * n_f * kl * scale;
-        return sanitize_p(chi_square_cdf(chi, 255.0));
-    }
-
-    // ---------------------------------------------------------
-    // 1‑ORDER KL: TRANSITION MATRIX (already precomputed)
-    // ---------------------------------------------------------
-    let transitions = match &stream.transition_matrix {
-        Some(t) => t,
-        None => return 0.0, // Should never happen if use_transition_kl = true
-    };
-
-    let n_f = (n - 1) as f64;
-    let uniform_p = 1.0 / 65536.0;
-
-    let mut kl_nats = 0.0;
-    for &c in transitions {
-        if c > 0 {
-            let p = c as f64 / n_f;
-            kl_nats += p * (p / uniform_p).ln();
-        }
-    }
-    
-    sanitize_p(1.0 - chi_square_cdf(2.0 * n_f * kl_nats * scale, 65535.0))
-}
-*/
-
-// ================================================================
-//  KL Divergence Byte Histogram Tests (Byte-based) with logging
-// ================================================================
-pub fn kl_divergence_byte_histogram_test(
-    stream: &mut BitByteStream,
-    thread_id: usize,
-    sample_idx: usize,
-) -> f64 {
-    let n = stream.byte_len;
-    let scale = stream.kl_scale;
-
-    // ---------------------------------------------------------
-    // 0‑ORDER KL: 
-    // ---------------------------------------------------------
-    let filename = format!(
-        "kl_divergence_debug_{}_{}.csv",
-        thread_id,
-        sample_idx,
-    );
-
-    let n_f = n as f64;
-    let uniform_p = 1.0 / 256.0;
-    let mut kl = 0.0;
-    let mut nonzero_bins = 0usize;
-
-    for &c in &stream.byte_histogram {
-        if c > 0 {
-            nonzero_bins += 1;
-            let p = c as f64 / n_f;
-            kl += p * (p / uniform_p).ln();
-        }
-    }
-
-    // Correct χ² approximation (no scale)
-    let chi = 2.0 * n_f * kl;
-    let df = 255.0;
-
-    // Correct right‑tail p‑value
-    let p = sanitize_p(1.0 - chi_square_cdf(chi, df));
-
-    // Logging
-    {
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&filename)
-            .unwrap();
-
-        if file.metadata().unwrap().len() == 0 {
-            writeln!(
-                file,
-                "thread_id,sample_idx,mode,n,scale,kl,chi,df,p_value,nonzero_bins"
-            ).unwrap();
-        }
-
-        writeln!(
-            file,
-            "{},{},{},{},{},{},{},{},{},{}",
-            thread_id,
-            sample_idx,
-            "byte_hist",
-            n,
-            scale,
-            kl,
-            chi,
-            df,
-            p,
-            nonzero_bins
         ).unwrap();
     }
 
@@ -6816,24 +6636,17 @@ pub fn run_calibrations(thread_id: usize, sample: usize, stream: &mut BitByteStr
 	ripley_k_unified_test(stream, thread_id, sample, 1024, 32, 0.20);
 	ripley_k_unified_test(stream, thread_id, sample, 1024, 32, 0.25);
 */
-    entropy_conditional_test(stream, thread_id, sample);
-    sample_entropy_unified_test(stream, thread_id, sample);
-    kl_divergence_byte_histogram_test(stream, thread_id, sample);
-	kl_divergence_matrix_test(stream, thread_id, sample);
+    
+    
+    
+	
 	
 
-    wasserstein_drift_unified_test(stream, thread_id, sample);
+/*    
 	
-	let panels = [
-        (257, 1),          // byte-level
-        (65537, 2),        // 16-bit words
-        (4294967291, 4),   // 32-bit words    
-	];
 	
-	quadratic_character_multi_panel_test(stream, thread_id, sample, &panels);
 
-    parabolic_runlength_fit_test(stream, thread_id, sample);
-
+    // always 0 p-value
 	bicoherence_proxy_test(stream, thread_id, sample, 32);
 	bicoherence_proxy_test(stream, thread_id, sample, 64);
 	bicoherence_proxy_test(stream, thread_id, sample, 128);
@@ -6846,13 +6659,62 @@ pub fn run_calibrations(thread_id: usize, sample: usize, stream: &mut BitByteStr
 	bicoherence_proxy_test(stream, thread_id, sample, 16368);
 	bicoherence_proxy_test(stream, thread_id, sample, 32768);
 	bicoherence_proxy_test(stream, thread_id, sample, 65536);
-	
+	sample_entropy_unified_test(stream, thread_id, sample);
 	permutation_entropy_unified_test(stream, thread_id, sample);	
 	spectral_csd_test(stream, thread_id, sample);
-	star_discrepancy_unified_test(stream, thread_id, sample);	
+	kl_divergence_matrix_test(stream, thread_id, sample);
+    turning_point_test(stream, thread_id, sample);	
+	wasserstein_drift_unified_test(stream, thread_id, sample);
+	
+	// p-values hovering at around 0.5
+	parabolic_runlength_fit_test(stream, thread_id, sample);
+	
+	// partially working... possible calibration
+	entropy_conditional_test(stream, thread_id, sample);
 	chaos_01_unified_test(stream, thread_id, sample);	
-	correlation_dimension_unified_test(stream, thread_id, sample);	
-	turning_point_test(stream, thread_id, sample);
+    correlation_dimension_unified_test(stream, thread_id, sample);		
+*/
+
+/*
+	let panels = [
+        // 2-byte words
+        (31397, 2),
+        (32749, 2),
+        (65521, 2),
+        (65537, 2),
+
+        // 3-byte words
+        (174763, 3),
+        (999431, 3),
+        (1048583, 3),
+        (1677721, 3),
+        
+        // 4-byte words
+        (2147483647, 4),        
+        (3221225473, 4),
+        (4294967087, 4),
+        (4294967291, 4),
+    ];
+	
+	let (p, mean) = quadratic_character_multi_panel_test(stream, thread_id, sample, &panels);
+	println!("{ } { }", p, mean);
+*/
+
+let raw = nist_random_excursions_test(stream);
+let result = aggregate_excursion_panel(raw);
+
+if result.valid_states == 0 {
+	println!("N/A");
+} else {
+	println!("{ } { }", result.min_p, result.mean_p);
+}
+
+//let raw = nist_random_excursions_variant_test(stream);
+//let result = aggregate_excursion_panel(raw);
+
+
+	
+	//star_discrepancy_unified_test(stream, thread_id, sample);	
 }
 
 
@@ -6872,8 +6734,7 @@ fn validate_excursion_eligibility(bits: &[u8], is_variant: bool)
         return (false, 0, Vec::new());
     }
 
-    
-    // build cumulative sum walk s_k    
+    // Build cumulative sum walk s_k
     let mut s_k = Vec::with_capacity(n);
     let mut current_sum = 2 * (bits[0] as i32) - 1;
     s_k.push(current_sum);
@@ -6889,13 +6750,13 @@ fn validate_excursion_eligibility(bits: &[u8], is_variant: bool)
         }
     }
 
+    // Variant includes final partial cycle
     let constraint = if is_variant {
-        // include final partial cycle if non-zero
         if current_sum != 0 {
             j += 1;
         }
         (0.005 * (n as f64).sqrt()).max(500.0) as usize
-    } else {        
+    } else {
         500usize
     };
 
@@ -6910,30 +6771,30 @@ fn validate_excursion_eligibility(bits: &[u8], is_variant: bool)
 pub fn nist_random_excursions_test(stream: &mut BitByteStream) -> Vec<Option<f64>> {
     let bits = &stream.bits;
     let (is_valid, j, s_k) = validate_excursion_eligibility(bits, false);
-        
+
     if !is_valid {
         return vec![None; 8];
     }
 
-    let n = bits.len();
     let j_f = j as f64;
-    let mut results = Vec::with_capacity(8);    
+    let n = bits.len();
+    let mut results = Vec::with_capacity(8);
+
     let state_x: [i32; 8] = [-4, -3, -2, -1, 1, 2, 3, 4];
-        
+
     let pi: [[f64; 6]; 5] = [
-        [0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // Padding for index 0
-        [0.5, 0.25, 0.125, 0.0625, 0.03125, 0.03125], // |x| = 1
-        [0.75, 0.0625, 0.046875, 0.03515625, 0.0263671875, 0.0791015625], // |x| = 2
-        [0.8333333333, 0.02777777778, 0.02314814815, 0.01929012346, 0.01607510288, 0.0803755143], // |x| = 3
-        [0.875, 0.015625, 0.013671875, 0.01196289063, 0.0104675293, 0.0732727051], // |x| = 4
+        [0.0; 6],
+        [0.5, 0.25, 0.125, 0.0625, 0.03125, 0.03125],
+        [0.75, 0.0625, 0.046875, 0.03515625, 0.0263671875, 0.0791015625],
+        [0.8333333333, 0.02777777778, 0.02314814815, 0.01929012346, 0.01607510288, 0.0803755143],
+        [0.875, 0.015625, 0.013671875, 0.01196289063, 0.0104675293, 0.0732727051],
     ];
 
     let mut nu = [[0f64; 8]; 6];
-    let mut counter = [0usize; 8];    
-    //let mut last_zero = 0usize;
-    for i in 0..n {
-        let val = s_k[i];
-        if (val >= 1 && val <= 4) || (val >= -4 && val <= -1) {
+    let mut counter = [0usize; 8];
+
+    for &val in &s_k {
+        if (1..=4).contains(&val) || (-4..=-1).contains(&val) {
             let b = if val < 0 { 4 } else { 3 };
             let idx = (val + b) as usize;
             counter[idx] += 1;
@@ -6945,14 +6806,13 @@ pub fn nist_random_excursions_test(stream: &mut BitByteStream) -> Vec<Option<f64
                 if c <= 4 { nu[c][k] += 1.0; } else { nu[5][k] += 1.0; }
                 counter[k] = 0;
             }
-            //last_zero = i;
         }
     }
 
-    // Process the final p-value for each of the 8 states
     for (i, &x_state) in state_x.iter().enumerate() {
         let abs_x = x_state.abs() as usize;
         let mut chi_sq = 0.0;
+
         for k in 0..6 {
             let expected = j_f * pi[abs_x][k];
             if expected > 0.0 {
@@ -6960,6 +6820,7 @@ pub fn nist_random_excursions_test(stream: &mut BitByteStream) -> Vec<Option<f64
                 chi_sq += (diff * diff) / expected;
             }
         }
+
         let p_val = safe_igamc("random_excursions", 2.5, chi_sq / 2.0);
         results.push(Some(p_val.clamp(0.0, 1.0)));
     }
@@ -6973,26 +6834,69 @@ pub fn nist_random_excursions_test(stream: &mut BitByteStream) -> Vec<Option<f64
 pub fn nist_random_excursions_variant_test(stream: &mut BitByteStream) -> Vec<Option<f64>> {
     let bits = &stream.bits;
     let (is_valid, j, s_k) = validate_excursion_eligibility(bits, true);
-    
+
     if !is_valid {
         return vec![None; 18];
     }
 
     let j_f = j as f64;
-    let mut results = Vec::with_capacity(18);    
-    let state_x: [i32; 18] = [-9, -8, -7, -6, -5, -4, -3, -2, -1, 1, 2, 3, 4, 5, 6, 7, 8, 9];
+    let mut results = Vec::with_capacity(18);
+
+    let state_x: [i32; 18] =
+        [-9, -8, -7, -6, -5, -4, -3, -2, -1,
+          1,  2,  3,  4,  5,  6,  7,  8,  9];
 
     for &x_state in &state_x {
         let count = s_k.iter().filter(|&&v| v == x_state).count();
         let numerator = ((count as f64) - j_f).abs();
         let denom = (2.0 * j_f * (4.0 * (x_state.abs() as f64) - 2.0)).sqrt();
-        
+
         let p_value = safe_erfc("RE Variant", numerator / denom);
         results.push(Some(p_value.clamp(0.0, 1.0)));
     }
 
     results
 }
+
+// ----------------------------------------------------------------
+// Excursion Panel Aggregator
+// ----------------------------------------------------------------
+pub struct ExcursionResult {
+    pub min_p: f64,
+    pub mean_p: f64,
+    pub valid_states: usize,
+}
+
+pub fn aggregate_excursion_panel(raw: Vec<Option<f64>>) -> ExcursionResult {
+    let mut vals = Vec::new();
+
+    for p in raw {
+        if let Some(v) = p {
+            vals.push(v);
+        }
+    }
+
+    let valid_states = vals.len();
+
+    if valid_states == 0 {
+        return ExcursionResult {
+            min_p: 1.0,
+            mean_p: 1.0,
+            valid_states: 0,
+        };
+    }
+
+    let min_p = vals.iter().cloned().fold(1.0, f64::min);
+    let mean_p = vals.iter().sum::<f64>() / (valid_states as f64);
+
+    ExcursionResult {
+        min_p,
+        mean_p,
+        valid_states,
+    }
+}
+
+
 
 /*
 // ----------------------------------------------------------------
