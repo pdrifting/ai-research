@@ -1,22 +1,26 @@
 use lazy_static::lazy_static;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::sync::Mutex;
-//use sha2::{Sha256};
+use sha2::{Sha256};
 //use rayon::prelude::*;
-//use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use statrs::function::gamma;
 //use rustfft::num_complex::Complex;
 use std::sync::LazyLock;
-//use serde::{Serialize, Deserialize};
+use serde::{Serialize, Deserialize};
 use once_cell::sync::Lazy;
 use rand::{RngCore, SeedableRng};
-//use rand::prelude::*;
+use rand::prelude::*;
 use rand_chacha::ChaCha20Rng;
 use core::f64::consts::PI;
 use std::fs::OpenOptions;
-use std::io::Write;
 //use std::f64::consts::SQRT_2;
 use statrs::distribution::{Normal, ContinuousCDF};
+//use std::sync::Arc;
+use std::fs::{self, File};
+use std::io::{Read, Write};
+use rand::Rng;
 
 use num_complex::Complex;
 type Complex64 = Complex<f64>;
@@ -3196,6 +3200,179 @@ fn modexp_u64(a: u64, mut e: u64, m: u64) -> u64 {
     }
 
     r as u64
+}
+
+// ----------------------------------------------------------------
+// NIST Random Excursion Test Validation
+// ----------------------------------------------------------------
+fn validate_excursion_eligibility(bits: &[u8], is_variant: bool)
+    -> (bool, usize, Vec<i32>)
+{
+    let n = bits.len();
+    if n == 0 {
+        return (false, 0, Vec::new());
+    }
+
+    // Build cumulative sum walk s_k
+    let mut s_k = Vec::with_capacity(n);
+    let mut current_sum = 2 * (bits[0] as i32) - 1;
+    s_k.push(current_sum);
+
+    let mut j = 0usize;
+
+    for i in 1..n {
+        current_sum += 2 * (bits[i] as i32) - 1;
+        s_k.push(current_sum);
+
+        if current_sum == 0 {
+            j += 1;
+        }
+    }
+
+    // Variant includes final partial cycle
+    let constraint = if is_variant {
+        if current_sum != 0 {
+            j += 1;
+        }
+        (0.005 * (n as f64).sqrt()).max(500.0) as usize
+    } else {
+        500usize
+    };
+
+    let is_valid = j >= constraint;
+
+    (is_valid, j, s_k)
+}
+
+// ----------------------------------------------------------------
+// NIST Random Excursion Test
+// ----------------------------------------------------------------
+pub fn nist_random_excursions_test(stream: &mut BitByteStream) -> Vec<Option<f64>> {
+    let bits = &stream.bits;
+    let (is_valid, j, s_k) = validate_excursion_eligibility(bits, false);
+
+    if !is_valid {
+        return vec![None; 8];
+    }
+
+    let j_f = j as f64;
+    let n = bits.len();
+    let mut results = Vec::with_capacity(8);
+
+    let state_x: [i32; 8] = [-4, -3, -2, -1, 1, 2, 3, 4];
+
+    let pi: [[f64; 6]; 5] = [
+        [0.0; 6],
+        [0.5, 0.25, 0.125, 0.0625, 0.03125, 0.03125],
+        [0.75, 0.0625, 0.046875, 0.03515625, 0.0263671875, 0.0791015625],
+        [0.8333333333, 0.02777777778, 0.02314814815, 0.01929012346, 0.01607510288, 0.0803755143],
+        [0.875, 0.015625, 0.013671875, 0.01196289063, 0.0104675293, 0.0732727051],
+    ];
+
+    let mut nu = [[0f64; 8]; 6];
+    let mut counter = [0usize; 8];
+
+    for &val in &s_k {
+        if (1..=4).contains(&val) || (-4..=-1).contains(&val) {
+            let b = if val < 0 { 4 } else { 3 };
+            let idx = (val + b) as usize;
+            counter[idx] += 1;
+        }
+
+        if val == 0 {
+            for k in 0..8 {
+                let c = counter[k];
+                if c <= 4 { nu[c][k] += 1.0; } else { nu[5][k] += 1.0; }
+                counter[k] = 0;
+            }
+        }
+    }
+
+    for (i, &x_state) in state_x.iter().enumerate() {
+        let abs_x = x_state.abs() as usize;
+        let mut chi_sq = 0.0;
+
+        for k in 0..6 {
+            let expected = j_f * pi[abs_x][k];
+            if expected > 0.0 {
+                let diff = nu[k][i] - expected;
+                chi_sq += (diff * diff) / expected;
+            }
+        }
+
+        let p_val = safe_igamc("random_excursions", 2.5, chi_sq / 2.0);
+        results.push(Some(p_val.clamp(0.0, 1.0)));
+    }
+
+    results
+}
+
+// ----------------------------------------------------------------
+// NIST Random Excursion Variant Test
+// ----------------------------------------------------------------
+pub fn nist_random_excursions_variant_test(stream: &mut BitByteStream) -> Vec<Option<f64>> {
+    let bits = &stream.bits;
+    let (is_valid, j, s_k) = validate_excursion_eligibility(bits, true);
+
+    if !is_valid {
+        return vec![None; 18];
+    }
+
+    let j_f = j as f64;
+    let mut results = Vec::with_capacity(18);
+
+    let state_x: [i32; 18] =
+        [-9, -8, -7, -6, -5, -4, -3, -2, -1,
+          1,  2,  3,  4,  5,  6,  7,  8,  9];
+
+    for &x_state in &state_x {
+        let count = s_k.iter().filter(|&&v| v == x_state).count();
+        let numerator = ((count as f64) - j_f).abs();
+        let denom = (2.0 * j_f * (4.0 * (x_state.abs() as f64) - 2.0)).sqrt();
+
+        let p_value = safe_erfc("RE Variant", numerator / denom);
+        results.push(Some(p_value.clamp(0.0, 1.0)));
+    }
+
+    results
+}
+
+// ----------------------------------------------------------------
+// Excursion Panel Aggregator
+// ----------------------------------------------------------------
+pub struct ExcursionResult {
+    pub min_p: f64,
+    pub mean_p: f64,
+    pub valid_states: usize,
+}
+
+pub fn aggregate_excursion_panel(raw: Vec<Option<f64>>) -> ExcursionResult {
+    let mut vals = Vec::new();
+
+    for p in raw {
+        if let Some(v) = p {
+            vals.push(v);
+        }
+    }
+
+    let valid_states = vals.len();
+
+    if valid_states == 0 {
+        return ExcursionResult {
+            min_p: 1.0,
+            mean_p: 1.0,
+            valid_states: 0,
+        };
+    }
+
+    let min_p = vals.iter().cloned().fold(1.0, f64::min);
+    let mean_p = vals.iter().sum::<f64>() / (valid_states as f64);
+
+    ExcursionResult {
+        min_p,
+        mean_p,
+        valid_states,
+    }
 }
 
 // ------------------------------------------------------------------------------------------------------
@@ -6700,7 +6877,11 @@ pub fn run_calibrations(thread_id: usize, sample: usize, stream: &mut BitByteStr
 	println!("{ } { }", p, mean);
 */
 
-let raw = nist_random_excursions_test(stream);
+//let raw = nist_random_excursions_test(stream);
+//let result = aggregate_excursion_panel(raw);
+
+
+let raw = nist_random_excursions_variant_test(stream);
 let result = aggregate_excursion_panel(raw);
 
 if result.valid_states == 0 {
@@ -6709,194 +6890,10 @@ if result.valid_states == 0 {
 	println!("{ } { }", result.min_p, result.mean_p);
 }
 
-//let raw = nist_random_excursions_variant_test(stream);
-//let result = aggregate_excursion_panel(raw);
-
 
 	
 	//star_discrepancy_unified_test(stream, thread_id, sample);	
 }
-
-
-// ------------------------------------------------------------------
-// these are a different kind of beast... not calibrating these
-// just the stats tracker is not working for them....
-// ------------------------------------------------------------------
-
-// ----------------------------------------------------------------
-// NIST Random Excursion Test Validation
-// ----------------------------------------------------------------
-fn validate_excursion_eligibility(bits: &[u8], is_variant: bool)
-    -> (bool, usize, Vec<i32>)
-{
-    let n = bits.len();
-    if n == 0 {
-        return (false, 0, Vec::new());
-    }
-
-    // Build cumulative sum walk s_k
-    let mut s_k = Vec::with_capacity(n);
-    let mut current_sum = 2 * (bits[0] as i32) - 1;
-    s_k.push(current_sum);
-
-    let mut j = 0usize;
-
-    for i in 1..n {
-        current_sum += 2 * (bits[i] as i32) - 1;
-        s_k.push(current_sum);
-
-        if current_sum == 0 {
-            j += 1;
-        }
-    }
-
-    // Variant includes final partial cycle
-    let constraint = if is_variant {
-        if current_sum != 0 {
-            j += 1;
-        }
-        (0.005 * (n as f64).sqrt()).max(500.0) as usize
-    } else {
-        500usize
-    };
-
-    let is_valid = j >= constraint;
-
-    (is_valid, j, s_k)
-}
-
-// ----------------------------------------------------------------
-// NIST Random Excursion Test
-// ----------------------------------------------------------------
-pub fn nist_random_excursions_test(stream: &mut BitByteStream) -> Vec<Option<f64>> {
-    let bits = &stream.bits;
-    let (is_valid, j, s_k) = validate_excursion_eligibility(bits, false);
-
-    if !is_valid {
-        return vec![None; 8];
-    }
-
-    let j_f = j as f64;
-    let n = bits.len();
-    let mut results = Vec::with_capacity(8);
-
-    let state_x: [i32; 8] = [-4, -3, -2, -1, 1, 2, 3, 4];
-
-    let pi: [[f64; 6]; 5] = [
-        [0.0; 6],
-        [0.5, 0.25, 0.125, 0.0625, 0.03125, 0.03125],
-        [0.75, 0.0625, 0.046875, 0.03515625, 0.0263671875, 0.0791015625],
-        [0.8333333333, 0.02777777778, 0.02314814815, 0.01929012346, 0.01607510288, 0.0803755143],
-        [0.875, 0.015625, 0.013671875, 0.01196289063, 0.0104675293, 0.0732727051],
-    ];
-
-    let mut nu = [[0f64; 8]; 6];
-    let mut counter = [0usize; 8];
-
-    for &val in &s_k {
-        if (1..=4).contains(&val) || (-4..=-1).contains(&val) {
-            let b = if val < 0 { 4 } else { 3 };
-            let idx = (val + b) as usize;
-            counter[idx] += 1;
-        }
-
-        if val == 0 {
-            for k in 0..8 {
-                let c = counter[k];
-                if c <= 4 { nu[c][k] += 1.0; } else { nu[5][k] += 1.0; }
-                counter[k] = 0;
-            }
-        }
-    }
-
-    for (i, &x_state) in state_x.iter().enumerate() {
-        let abs_x = x_state.abs() as usize;
-        let mut chi_sq = 0.0;
-
-        for k in 0..6 {
-            let expected = j_f * pi[abs_x][k];
-            if expected > 0.0 {
-                let diff = nu[k][i] - expected;
-                chi_sq += (diff * diff) / expected;
-            }
-        }
-
-        let p_val = safe_igamc("random_excursions", 2.5, chi_sq / 2.0);
-        results.push(Some(p_val.clamp(0.0, 1.0)));
-    }
-
-    results
-}
-
-// ----------------------------------------------------------------
-// NIST Random Excursion Variant Test
-// ----------------------------------------------------------------
-pub fn nist_random_excursions_variant_test(stream: &mut BitByteStream) -> Vec<Option<f64>> {
-    let bits = &stream.bits;
-    let (is_valid, j, s_k) = validate_excursion_eligibility(bits, true);
-
-    if !is_valid {
-        return vec![None; 18];
-    }
-
-    let j_f = j as f64;
-    let mut results = Vec::with_capacity(18);
-
-    let state_x: [i32; 18] =
-        [-9, -8, -7, -6, -5, -4, -3, -2, -1,
-          1,  2,  3,  4,  5,  6,  7,  8,  9];
-
-    for &x_state in &state_x {
-        let count = s_k.iter().filter(|&&v| v == x_state).count();
-        let numerator = ((count as f64) - j_f).abs();
-        let denom = (2.0 * j_f * (4.0 * (x_state.abs() as f64) - 2.0)).sqrt();
-
-        let p_value = safe_erfc("RE Variant", numerator / denom);
-        results.push(Some(p_value.clamp(0.0, 1.0)));
-    }
-
-    results
-}
-
-// ----------------------------------------------------------------
-// Excursion Panel Aggregator
-// ----------------------------------------------------------------
-pub struct ExcursionResult {
-    pub min_p: f64,
-    pub mean_p: f64,
-    pub valid_states: usize,
-}
-
-pub fn aggregate_excursion_panel(raw: Vec<Option<f64>>) -> ExcursionResult {
-    let mut vals = Vec::new();
-
-    for p in raw {
-        if let Some(v) = p {
-            vals.push(v);
-        }
-    }
-
-    let valid_states = vals.len();
-
-    if valid_states == 0 {
-        return ExcursionResult {
-            min_p: 1.0,
-            mean_p: 1.0,
-            valid_states: 0,
-        };
-    }
-
-    let min_p = vals.iter().cloned().fold(1.0, f64::min);
-    let mean_p = vals.iter().sum::<f64>() / (valid_states as f64);
-
-    ExcursionResult {
-        min_p,
-        mean_p,
-        valid_states,
-    }
-}
-
-
 
 /*
 // ----------------------------------------------------------------
@@ -7127,8 +7124,717 @@ fn generate_random_bytes(rng: &mut ChaCha20Rng, len: usize) -> Vec<u8> {
     buf
 }
 
+const INPUT_SIZE: usize = 16384;
+const LATTICE_WIDTH: usize = 2048;
+const MAX_SYNAPSES: usize = 20;
+const MAX_DELAY: u8 = 30;
+const SIM_TICKS: usize = 30;
+const EPOCHS: usize = 3;
+const TOTAL_BITS: usize = 1000000;
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[repr(u8)]
+//enum GateType { XOR, NAND, OR, AND, NOR, SHIFT, FLIPFLOP, PULSE }
+enum GateType { XOR, NAND, OR, AND, NOR }
+
+#[derive(Clone, Copy, Default, Serialize, Deserialize)]
+struct Synapse {
+    source_idx: u16,
+    delay: u8,
+    timer: u8,
+    signal_active: u8,
+}
+
+#[derive(Clone, Copy, Serialize, Deserialize)]
+struct LatticeNeuron {
+    state: u8,
+    gate_type: GateType,
+    dendrites: [Synapse; MAX_SYNAPSES],
+}
+
+#[derive(Serialize, Deserialize)]
+struct IonModel {
+    hidden: Vec<LatticeNeuron>,
+}
+
+impl IonModel {
+    fn new() -> Self {
+        let mut rng = rand::thread_rng();
+        let mut hidden = Vec::with_capacity(LATTICE_WIDTH);
+
+        for _ in 0..LATTICE_WIDTH {
+            let mut dendrites = [Synapse::default(); MAX_SYNAPSES];
+            for d in dendrites.iter_mut() {
+                d.source_idx = rng.gen_range(0..INPUT_SIZE as u16);
+                d.delay = rng.gen_range(1..=MAX_DELAY);
+            }
+
+            hidden.push(LatticeNeuron {
+                state: rng.gen_range(0..2),
+                gate_type: match rng.gen_range(0..5) {
+                    0 => GateType::XOR,
+                    1 => GateType::NAND,
+                    2 => GateType::OR,
+                    3 => GateType::AND,
+                    _ => GateType::NOR,
+                },
+                dendrites,
+            });
+        }
+        IonModel { hidden }
+    }
+
+	fn tick(&mut self, input: &[u8], output: &mut [u8]) {
+		for i in 0..LATTICE_WIDTH {
+			// We use a temporary scope or copy values to avoid double-borrowing self.hidden
+			let (gate_type, idx_a_raw) = {
+				let n = &self.hidden[i];
+				(n.gate_type, n.dendrites[0].source_idx as usize)
+			};
+        
+			let idx_b_raw = self.hidden[i].dendrites[1].source_idx as usize;
+
+			// RESOLVE INPUT A: Can be External Input or Internal Hidden Gate
+			let a = if idx_a_raw < INPUT_SIZE {
+				input[idx_a_raw]
+			} else {
+				// It's a "Hot Gate" from our internal lattice!
+				let internal_idx = (idx_a_raw - INPUT_SIZE) % LATTICE_WIDTH;
+				self.hidden[internal_idx].state
+			};
+
+			// RESOLVE INPUT B: Same logic for consistency
+			let b = if idx_b_raw < INPUT_SIZE {
+				input[idx_b_raw]
+			} else {
+				let internal_idx = (idx_b_raw - INPUT_SIZE) % LATTICE_WIDTH;
+				self.hidden[internal_idx].state
+			};
+
+			let gate_out = match gate_type {
+				GateType::XOR  => a ^ b,
+				GateType::NAND => if a == 1 && b == 1 { 0 } else { 1 },
+				GateType::OR   => a | b,
+				GateType::AND  => a & b,
+				GateType::NOR  => if a == 0 && b == 0 { 1 } else { 0 },
+			};
+
+			// ... rest of your signal propagation and timer logic remains the same ...
+			let mut flux = 0u8;
+			let neuron = &mut self.hidden[i];
+			for s in neuron.dendrites.iter_mut() {
+				if gate_out == 1 { s.signal_active = 1; }
+
+				if s.signal_active == 1 {
+					if s.timer >= s.delay {
+						flux ^= 1;
+						s.timer = 0;
+						s.signal_active = 0;
+					} else {
+						s.timer += 1;
+					}
+				}
+			}
+			neuron.state ^= flux & 1;
+			output[i] = neuron.state;
+		}
+	}
+
+    fn save_snapshot(&self, filename: &str) -> bincode::Result<()> {
+        // bincode::Result is compatible with std::io::Error
+        // We map the IO error directly into the bincode Error type
+        let file = File::create(filename).map_err(bincode::Error::from)?;
+        bincode::serialize_into(file, self)
+    }
+	
+	pub fn load_snapshot(filename: &str) -> bincode::Result<Self> {
+        let file = File::open(filename).map_err(bincode::Error::from)?;
+        bincode::deserialize_from(file)        
+    }
+
+    pub fn warmup(&mut self, ticks: usize) {
+        let input = vec![0u8; INPUT_SIZE];
+        let mut sink = vec![0u8; LATTICE_WIDTH];
+        for _ in 0..ticks {
+            self.tick(&input, &mut sink);
+        }
+    }
+
+    /// Generates bits specifically for the high-volume battery.
+    /// Note: Uses '0' input as requested for "sustained 0 entropy" testing.
+    pub fn generate_block_with_audit(&mut self, size: usize, audit: &mut HealthAudit) -> Vec<u8> {
+        let input = vec![0u8; INPUT_SIZE];
+        let mut bits = Vec::with_capacity(size);
+        let mut output_bits = vec![0u8; LATTICE_WIDTH];
+        
+        // We need to know the state before the first tick
+        let mut prev_state: Vec<u8> = self.hidden.iter().map(|n| n.state).collect();
+
+        while bits.len() < size {
+            self.tick(&input, &mut output_bits);
+            
+            // Record Flips for Audit
+            audit.record(&prev_state, &output_bits);
+            prev_state.copy_from_slice(&output_bits);
+
+            for i in 0..125 {
+                if bits.len() >= size { break; }
+                let b = output_bits[i] ^ output_bits[i + 250] ^ output_bits[i + 500] ^ output_bits[i + 750];
+                bits.push(b);
+            }
+        }
+        bits
+    }
+	
+	pub fn generate_block_raw_audit(&mut self, size: usize, audit: &mut HealthAudit) -> Vec<u8> {
+        let input = vec![0u8; INPUT_SIZE];
+        let mut bits = Vec::with_capacity(size);
+        let mut output_bits = vec![0u8; LATTICE_WIDTH];
+    
+        // Track previous state for flip-rate auditing
+        let mut prev_state: Vec<u8> = self.hidden.iter().map(|n| n.state).collect();
+
+        while bits.len() < size {
+            self.tick(&input, &mut output_bits);
+            audit.record(&prev_state, &output_bits);
+    
+            // Use the state of a specific gate to "jitter" the harvest count
+            // This makes the sampling rate itself a chaotic variable
+            let jitter_factor = (output_bits[0] as usize) + (output_bits[1024] as usize); 
+            let harvest_count = 800 + (jitter_factor % 200); // Harvest between 800 and 1000
+
+            for i in 0..harvest_count {
+                if bits.len() >= size { break; }
+                bits.push(output_bits[i]);
+            }
+        }
+        bits
+    }
+
+    pub fn generate_block_prime_stride(&mut self, size: usize, audit: &mut HealthAudit) -> Vec<u8> {
+        let mut bits = Vec::with_capacity(size);    
+        let mut output_bits = vec![0u8; LATTICE_WIDTH];    
+	    let mut sIndex = 0;
+	    let stride: [usize; 6] = [31,17,29,23,11,19];
+	    let mut sCurrent = stride[sIndex];
+	    let mut scIndex = 0;
+	    let sCounter: [usize; 13] = [5,13,7,11,13,5,7,19,23,11,31,17,19];
+        let mut sCurrentCount = sCounter[scIndex];	
+	    let mut current_idx = 0;
+    	
+        let mut prev_state: Vec<u8> = self.hidden.iter().map(|n| n.state).collect();
+        while bits.len() < size {
+            self.tick(&vec![0u8; INPUT_SIZE], &mut output_bits);
+            audit.record(&prev_state, &output_bits);
+
+            //let mut isFirst = true;
+		    //let mut isSecond = true;
+            for _ in 0..125 { // Extract fewer bits per tick to ensure higher quality
+                if bits.len() >= size { break; }
+
+			    bits.push(output_bits[current_idx]);
+			    /*
+			    for i in 0..125 {
+                    if bits.len() >= size { break; }
+                    let b = output_bits[i] ^ output_bits[i + 250] ^ output_bits[i + 500] ^ output_bits[i + 750];
+                    bits.push(b);
+                }
+			    */
+			
+			    sCurrentCount -= 1;
+			    if sCurrentCount == 0 {
+			        scIndex += 1;
+                    if scIndex >= 11 { scIndex = 0; }
+			        sCurrentCount = sCounter[scIndex];
+			   
+                    sIndex +=1;
+			        if sIndex >= 5 { sIndex = 0; }
+			        sCurrent = stride[sIndex];
+			    }
+						
+                current_idx = (current_idx + sCurrent) % LATTICE_WIDTH;
+			    //current_idx = (current_idx) % LATTICE_WIDTH;
+            }
+        }
+        bits
+    }
+}
+
+struct HealthAudit {
+    flip_counts: Vec<u64>,
+    total_ticks: u64,
+}
+
+impl HealthAudit {
+    fn new() -> Self {
+        Self { flip_counts: vec![0; LATTICE_WIDTH], total_ticks: 0 }
+    }
+
+    fn record(&mut self, prev_state: &[u8], current_state: &[u8]) {
+        for i in 0..LATTICE_WIDTH {
+            if prev_state[i] != current_state[i] {
+                self.flip_counts[i] += 1;
+            }
+        }
+        self.total_ticks += 1;
+    }
+
+	fn report(&self) -> u64 {
+		if self.total_ticks == 0 {
+			println!("HealthAudit: No ticks recorded yet.");
+			return LATTICE_WIDTH as u64; 
+		}
+
+		let mut thermal_profile = self.flip_counts.iter()
+			.map(|&c| (c as f64 / self.total_ticks as f64) * 100.0)
+			.collect::<Vec<f64>>();
+    
+		// Use total_cmp to avoid the NaN panic
+		thermal_profile.sort_by(|a, b| a.total_cmp(b));
+   
+		println!("--- Thermal Equilibrium Report ---");
+		// Safe indexing with guards
+		if let (Some(cold), Some(med), Some(hot)) = (
+			thermal_profile.first(),
+			thermal_profile.get(LATTICE_WIDTH / 2),
+			thermal_profile.last()
+		) {
+			println!("Coldest Gate: {:.2}% flip rate", cold);
+			println!("Median Gate:  {:.2}% flip rate", med);
+			println!("Hottest Gate: {:.2}% flip rate", hot);
+		}
+    
+		let dead_gates = thermal_profile.iter().filter(|&&r| r < 0.01).count();
+		println!("Dead Gates (Stuck): {} / {}", dead_gates, LATTICE_WIDTH);
+    
+		dead_gates as u64
+	}
+}
+
+fn migrate_zombies(model: &mut IonModel, audit: &HealthAudit) {
+    let mut rng = rand::thread_rng();
+    
+    // Identify "Hot" internal gates to tether the zombies to
+    let hot_gates: Vec<u16> = audit.flip_counts.iter()
+        .enumerate()
+        .filter(|&(_, count)| *count > 0)
+        .map(|(i, _)| i as u16)
+        .collect();
+
+    for i in 0..LATTICE_WIDTH {
+        if audit.flip_counts[i] == 0 {            
+            let r = rng.gen_range(0..=2);
+			if r == 0 {
+				model.hidden[i].gate_type = GateType::NOR;
+			} else {
+			    model.hidden[i].gate_type = GateType::XOR;
+            }
+            // 2. Connectivity Migration: 
+            // Move dendrites from Input Pins to Internal Gates
+            for d_idx in 0..MAX_SYNAPSES {
+                // If it was looking at an input pin, move it to a hot gate
+                if model.hidden[i].dendrites[d_idx].source_idx < INPUT_SIZE as u16 {
+                    if !hot_gates.is_empty() {
+                        let new_target = hot_gates[rng.gen_range(0..hot_gates.len())];
+                        model.hidden[i].dendrites[d_idx].source_idx = new_target + INPUT_SIZE as u16;
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn analyze_zombie_topology(model: &IonModel, audit: &HealthAudit) {
+    println!("\n--- Deep-Dive: Zombie Topology Report ---");
+    
+    let mut dead_gate_indices = Vec::new();
+    for (i, &count) in audit.flip_counts.iter().enumerate() {
+        if count == 0 { dead_gate_indices.push(i); }
+    }
+
+    for &z_idx in dead_gate_indices.iter().take(10) { // Let's look at the first 10
+        let zombie = &model.hidden[z_idx];
+        println!("\nZombie Node [{}] | Type: {:?}", z_idx, zombie.gate_type);
+        
+        for (d_idx, syn) in zombie.dendrites.iter().enumerate() {
+            let src = syn.source_idx as usize;
+            
+            // Check if the source is an Input Pin or another Hidden Gate
+            if src < INPUT_SIZE {
+                println!("  dendrite[{}]: Connected to Input Pin {}", d_idx, src);
+            } else {
+                let gate_src = src % LATTICE_WIDTH;
+                let src_flips = audit.flip_counts[gate_src];
+                let src_status = if src_flips == 0 { "DEAD" } else { "ACTIVE" };
+                
+                println!(
+                    "  dendrite[{}]: Connected to Gate {} ({}) | Source Activity: {} flips", 
+                    d_idx, gate_src, src_status, src_flips
+                );
+            }
+        }
+    }
+}
+
+
+
+fn run_exhaustion_test(model_path: &str) {
+    let mut model = IonModel::load_snapshot(model_path).unwrap();	
+    //let mut seen_hashes = HashSet::new();
+    let mut audit = HealthAudit::new();
+    let mut block_count = 0;
+    let mut pass_count = 0;
+
+/*
+10200
+400
+
+[Block 600] Pass Rate: 96.08%
+--- Thermal Equilibrium Report ---
+Coldest Gate: 49.27% flip rate
+Median Gate:  49.70% flip rate
+Hottest Gate: 50.26% flip rate
+Dead Gates (Stuck): 0 / 2048
+*/
+
+    let run_to_block = 600;
+	let base_failed = 400;
+	let base_run    = 10200;
+
+    println!("--- Launching Exhaustion & Health Audit: {} ---", model_path);
+    model.warmup(5000);
+
+    let bits = model.generate_block_with_audit(10_000_000, &mut audit);
+	migrate_zombies(&mut model,&audit);
+	let bits = model.generate_block_with_audit(10_000_000, &mut audit);
+	let dead_count = audit.report();
+	if dead_count > 0 {
+		println!("dead count in report >0 reseed.");
+       return;
+	}
+	
+	let mut total_tests_run = 0;
+	let mut total_tests_failed = 0;
+	
+	let mut reNA = 0;
+	let mut reFailLow = 0;
+	let mut rePassLow = 0;
+	let mut reFailMean = 0;
+	let mut rePassMean = 0;
+	
+	let mut revNA = 0;
+	let mut revFailLow = 0;
+	let mut revPassLow = 0;
+	let mut revFailMean = 0;
+	let mut revPassMean = 0;
+
+    let mut reLowMean = 0.0;
+	let mut revLowMean = 0.0;
+	let mut reMean = 0.0;
+	let mut revMean = 0.0;
+	
+    loop {
+        // Generate with Audit tracking
+        let bits = model.generate_block_prime_stride(8_388_608, &mut audit);
+		let mut stream = BitByteStream::new_from_bits(bits);
+		
+        // Hash Check
+        //let mut hasher = Sha256::new();
+        //hasher.update(&bits);
+        //let hash = format!("{:x}", hasher.finalize());
+        
+        //if !seen_hashes.insert(hash) {
+        //    println!("CRITICAL: Hash Collision at block {}!", block_count);
+        //    audit.report(); // Show state at time of death
+        //    break;
+        //}
+
+        // Integrity Check
+        // let (is_perfect, fails, total) = RandomTests::new(&bits).all_core_pass(0.01);
+        
+		let raw1 = nist_random_excursions_test(&mut stream);
+        let result1 = aggregate_excursion_panel(raw1);
+        
+		if result1.valid_states == 0 {
+			reNA += 1;
+		} else {
+			if result1.min_p < 0.01 {
+				reFailLow += 1;
+			} else {
+				rePassLow += 1;
+			}
+			
+			if result1.mean_p < 0.01 {
+				reFailMean += 1;
+			} else {
+				rePassMean += 1;
+			}
+		}
+		
+		reLowMean += result1.min_p;
+		reMean += result1.mean_p;
+		
+        let raw2 = nist_random_excursions_variant_test(&mut stream);
+        let result2 = aggregate_excursion_panel(raw2);
+
+        if result2.valid_states == 0 {
+			revNA += 1;
+		} else {
+			if result2.min_p < 0.01 {
+				revFailLow += 1;
+			} else {
+				revPassLow += 1;
+			}
+			
+			if result2.mean_p < 0.01 {
+				revFailMean += 1;
+			} else {
+				revPassMean += 1;
+			}
+		}
+
+        revLowMean += result2.min_p;
+		revMean += result2.mean_p;
+		
+	    println!("{ },{ },{ },{ },{ },{ },{ },{ },{ },{ },{ },{ },{ },{ }",
+	        reNA,  reFailLow,  rePassLow,  reFailMean,  rePassMean,
+     	    revNA, revFailLow, revPassLow, revFailMean, revPassMean,
+		    reLowMean / block_count as f64,
+	        reMean / block_count as f64,
+		    revLowMean / block_count as f64,
+		    revMean / block_count as f64
+		);
+				
+		//total_tests_run += total;
+		//total_tests_failed += fails;
+        println!("{}", total_tests_run);
+        //println!("{}", total_tests_failed);
+
+        //if total_tests_failed > base_failed {
+		//	println!("Model is doing bad, tests failed more than baseline...");
+		//	break;
+		//}
+
+        block_count += 1;
+        //let pass_rate = 100.0 as f64 - ((total_tests_failed as f64 / total_tests_run as f64) * 100.0);
+        
+        // Combined Reporting
+        //if block_count % 10 == 0 {
+        //    println!("\n[Block {}] Pass Rate: {:.2}%", block_count, pass_rate);
+        //    audit.report(); // Prints thermal equilibrium and dead gate count
+        //}
+
+        //println!("Integrity report: Pass rate {:.2}%", pass_rate);
+        audit.report();
+
+        if block_count >= 1200 {
+            //if pass_rate > 96.08 {
+			//	 let snap_name = format!("candidate_{}.snap",total_tests_failed);
+			//     model.save_snapshot(&snap_name);				 
+			//}
+			return;
+		}			
+    }
+}
+
+/*
+fn run_exhaustion_test_raw(model_path: &str) {
+    let mut model = IonModel::load_snapshot(model_path).unwrap();	
+    let mut seen_hashes = HashSet::new();
+    let mut audit = HealthAudit::new();
+    let mut block_count = 0;
+    let mut pass_count = 0;
+
+/*
+10200
+400
+
+[Block 600] Pass Rate: 96.08%
+--- Thermal Equilibrium Report ---
+Coldest Gate: 49.27% flip rate
+Median Gate:  49.70% flip rate
+Hottest Gate: 50.26% flip rate
+Dead Gates (Stuck): 0 / 2048
+*/
+
+    let run_to_block = 600;
+	let base_failed = 400;
+	let base_run    = 10200;
+
+    println!("--- Launching RAW Exhaustion & Health Audit: {} ---", model_path);
+    model.warmup(5000);
+
+    let bits = model.generate_block_prime_stride(10_000_000, &mut audit);
+	migrate_zombies(&mut model,&audit);
+	let bits = model.generate_block_prime_stride(10_000_000, &mut audit);
+	let dead_count = audit.report();
+	if dead_count > 0 {
+		println!("dead count in report >0 reseed.");
+        return;
+	}
+	
+	let mut total_tests_run = 0;
+	let mut total_tests_failed = 0;
+	
+    loop {
+        // Generate with Audit tracking
+        let bits = model.generate_block_prime_stride(2_500_000, &mut audit);
+		
+        // Hash Check
+        let mut hasher = Sha256::new();
+        hasher.update(&bits);
+        let hash = format!("{:x}", hasher.finalize());
+        
+        if !seen_hashes.insert(hash) {
+            println!("CRITICAL: Hash Collision at block {}!", block_count);
+            audit.report(); // Show state at time of death
+            break;
+        }
+
+        // Integrity Check
+        let (is_perfect, fails, total) = RandomTests::new(&bits).all_core_pass(0.01);
+        total_tests_run += total;
+		total_tests_failed += fails;
+        println!("{}", total_tests_run);
+        println!("{}", total_tests_failed);
+
+        if total_tests_failed > base_failed {
+			println!("Model is doing bad, tests failed more than baseline...");
+			break;
+		}
+
+        block_count += 1;
+        let pass_rate = 100.0 as f64 - ((total_tests_failed as f64 / total_tests_run as f64) * 100.0);
+        
+        // Combined Reporting
+        if block_count % 10 == 0 {
+            println!("\n[Block {}] Pass Rate: {:.2}%", block_count, pass_rate);
+            audit.report(); // Prints thermal equilibrium and dead gate count
+        }
+
+        println!("Integrity report: Pass rate {:.2}%", pass_rate);
+        audit.report();
+
+        if block_count >= 600 {
+            if pass_rate > 96.08 {
+				 let snap_name = format!("candidate_{}.snap",total_tests_failed);
+			     model.save_snapshot(&snap_name);				 
+			}
+			return;
+		}			
+    }
+}
+*/
+
+/*
+fn run_heavy_battery(model_path: &str) -> bool {
+    let mut audit = HealthAudit::new();
+	
+	let mut model = match IonModel::load_snapshot(model_path) {
+        Ok(m) => m,
+        Err(e) => { println!("Failed to load {}: {}", model_path, e); return false; },
+    };
+
+    model.warmup(5000);
+    println!("--- Starting Battery for: {} ---", model_path);
+    let alpha = 0.01;
+    let mut rng = rand::thread_rng();
+
+    let bits = model.generate_block_with_audit(1_000_000, &mut audit);
+	migrate_zombies(&mut model,&audit);
+
+    // 1. 10x 1M Tests
+    println!("Staring 1 million");
+	for i in 0..10 {
+        let bits = model.generate_block_with_audit(1_000_000, &mut audit);		
+        //if !RandomTests::new(&bits).all_core_pass(alpha) { return false; }
+		RandomTests::new(&bits).all_core_pass(alpha);
+		audit.report();
+        println!("1M Block #{}", i);
+    }
+
+    // 2. 10x 2.5M Tests
+    println!("Staring 2.5 million");
+	for i in 0..10 {
+        let bits = model.generate_block_with_audit(2_500_000, &mut audit);
+        //if !RandomTests::new(&bits).all_core_pass(alpha) { return false; }
+		RandomTests::new(&bits).all_core_pass(alpha);
+		//audit.report();
+        println!("2.5M Block #{}", i);
+    }
+
+    // 3. 5x 10M with 1000x Random Bouncing (2.5M sections)
+	println!("Staring 10 million");
+    for i in 0..5 {
+        let massive_bits = model.generate_block_with_audit(10_000_000, &mut audit);
+        for _ in 0..10 {
+            let offset = rng.gen_range(0..=(10_000_000 - 2_500_000));
+            let section = &massive_bits[offset..offset + 2_500_000];
+            //if !RandomTests::new(section).all_core_pass(alpha) { 
+            //    println!("FAIL: 10M Bounce at offset {}", offset);
+            //    return false; 
+            //}
+			RandomTests::new(section).all_core_pass(alpha);
+			//audit.report();
+			println!("-----bounce marker-----")
+        }
+        println!("10M Bouncing Block #{}", i);
+    }
+
+    // 4. 5x 100M with 1000x Random Bouncing (10M sections)
+    println!("Staring 100 million");
+	for i in 0..5 {
+        let ultra_bits = model.generate_block_with_audit(100_000_000, &mut audit);
+        for _ in 0..10 {
+            let offset = rng.gen_range(0..=(100_000_000 - 25_000_000));
+            let section = &ultra_bits[offset..offset + 25_000_000];
+            //if !RandomTests::new(section).all_core_pass(alpha) {
+            //    println!("FAIL: 100M Bounce at offset {}", offset);
+            //    return false;
+            //}
+			RandomTests::new(section).all_core_pass(alpha);
+			println!("-----bounce marker-----");
+        }
+        println!("Pass: 100M Bouncing Block #{}", i);
+    }
+
+    true
+}
+*/
 fn main() {
-    let mut rng = ChaCha20Rng::from_entropy();
+    let files = vec![
+		"HIT_4_M0_E0_F2000_ALL0_ALL1_0011_1100.snap",
+		"HIT_4_M0_E4_F3500_ALL0_ALL1_0011_1100.snap",
+		"HIT_4_M11_E1_F1500_ALL0_ALL1_0011_1100.snap",
+		"HIT_4_M11_E2_F2500_ALL0_ALL1_0011_1100.snap",
+		"HIT_4_M12_E1_F0_ALL0_ALL1_0011_1100.snap",
+		"HIT_4_M13_E1_F0_ALL0_ALL1_0011_1100.snap",
+		"HIT_4_M13_E1_F3500_ALL0_ALL1_0011_1100.snap",
+		"HIT_4_M13_E7_F0_ALL0_ALL1_0011_1100.snap",
+		"HIT_4_M14_E2_F3000_ALL0_ALL1_0011_1100.snap",
+		"HIT_4_M14_E3_F3500_ALL0_ALL1_0011_1100.snap",
+		"HIT_4_M15_E2_F2500_ALL0_ALL1_0011_1100.snap",
+		"HIT_4_M15_E4_F0_ALL0_ALL1_0011_1100.snap",
+		"HIT_4_M21_E2_F1000_ALL0_ALL1_0011_1100.snap",
+		"HIT_4_M21_E2_F2500_ALL0_ALL1_0011_1100.snap",
+		"HIT_4_M22_E1_F0_ALL0_ALL1_0011_1100.snap",
+		"HIT_4_M2_E1_F1500_ALL0_ALL1_0011_1100.snap",
+		"HIT_4_M2_E1_F3500_ALL0_ALL1_0011_1100.snap",
+		"HIT_4_M3_E14_F1000_ALL0_ALL1_0011_1100.snap",
+		"HIT_4_M5_E2_F1000_ALL0_ALL1_0011_1100.snap",
+		"HIT_4_M7_E2_F3000_ALL0_ALL1_0011_1100.snap",
+		"HIT_4_M8_E2_F1500_ALL0_ALL1_0011_1100.snap",
+		"HIT_4_M9_E0_F1000_ALL0_ALL1_0011_1100.snap"
+	];
+    run_exhaustion_test("HIT_4_M0_E4_F3500_ALL0_ALL1_0011_1100.snap");
+    //run_heavy_battery("HIT_4_M0_E4_F3500_ALL0_ALL1_0011_1100.snap");    
+    
+	//for filename in files {
+	//    println!("{} passed: {}",filename, run_heavy_battery(filename))
+    //}
+	
+	/*
+	let mut rng = ChaCha20Rng::from_entropy();
 
     for i in 0..1200 {
         let bytes = generate_random_bytes(&mut rng, 1024 * 1024);
@@ -7136,5 +7842,7 @@ fn main() {
 		run_calibrations(0, 1, &mut stream);
         //println!("running calibrations: {}", i);
     }
+	*/
+	
+	return;
 }
-
