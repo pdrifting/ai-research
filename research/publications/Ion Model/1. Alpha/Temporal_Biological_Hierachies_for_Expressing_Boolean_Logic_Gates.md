@@ -1131,6 +1131,6 @@ It will come when we start thinking about:
 - efficiency, real‑time optimization
 - stewards of long‑term trajectories
 
-We are a long way from any of these. Even the most comprehensive dendritic computation reviews, such as the Annual Review of Neuroscience article by London & Häusser (2005), conclude with a ‘wish list’ of unanswered questions. These works identify the nonlinear, compartmentalized, and computationally rich properties of dendrites, but they provide no operational models, no circuit frameworks, and no mechanisms for chaining or reasoning. The roadmap they outline remains untraveled because the field lacks a computational substrate capable of expressing dendritic logic. This responsitory begins where those roadmaps end.
+We are a long way from any of these. Even the most comprehensive dendritic computation reviews, such as the Annual Review of Neuroscience article by London & Häusser (2005), conclude with a ‘wish list’ of unanswered questions. These works identify the nonlinear, compartmentalized, and computationally rich properties of dendrites, but they provide no operational models, no circuit frameworks, and no mechanisms for chaining or reasoning. The roadmap they outline remains untraveled because the field lacks a computational substrate capable of expressing dendritic logic. This repository begins where those roadmaps end.
 
 
