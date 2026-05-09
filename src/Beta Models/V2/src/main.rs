@@ -1,0 +1,4275 @@
+//use lazy_static::lazy_static;
+//use std::collections::HashMap;
+//use std::collections::HashSet;
+//use std::sync::Mutex;
+//use sha2::{Sha256};
+use sha3::{Sha3_512, Digest as Sha3Digest};
+use blake2::{Blake2b512, Digest as Blake2Digest};
+//use rayon::prelude::*;
+//use std::sync::atomic::{AtomicBool, Ordering};
+use statrs::function::gamma;
+//use rustfft::num_complex::Complex;
+use std::sync::LazyLock;
+use serde::{Serialize, Deserialize};
+use once_cell::sync::Lazy;
+//use rand::{RngCore, SeedableRng};
+use rand::RngCore;
+//use rand::prelude::*;
+use rand_chacha::ChaCha20Rng;
+use core::f64::consts::PI;
+use std::fs::OpenOptions;
+//use std::f64::consts::SQRT_2;
+use statrs::distribution::{Normal, ContinuousCDF};
+//use std::sync::Arc;
+//use std::fs::{self, File};
+//use std::fs::File;
+use std::io::Write;
+use rand::Rng;
+use rand::seq::SliceRandom;
+use num_complex::Complex;
+use aes::Aes256;
+//use ctr::cipher::{KeyIvInit, StreamCipher};
+use ctr::cipher::StreamCipher;
+use sha3::{Shake256, digest::{Update, ExtendableOutput, XofReader}};
+use std::time::{SystemTime, UNIX_EPOCH};
+//use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+//use std::path::Path;
+use std::thread;
+//use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
+//use crossbeam::queue::SegQueue;
+
+type AesCtr = ctr::Ctr64BE<Aes256>;
+type Complex64 = Complex<f64>;
+
+
+// ---------------------------------------------------------------------------
+// Cephes math constants
+// ---------------------------------------------------------------------------
+
+const MACHEP:    f64 = 1.11022302462515654042E-16;
+const MAXLOG:    f64 = 7.09782712893383996732224E2;
+//const MAXNUM:    f64 = 1.7976931348623158E308;
+
+const BIG:       f64 = 4.503599627370496e15;
+const BIGINV:    f64 = 2.22044604925031308085e-16;
+
+const TWO_SQRT_PI: f64 = 1.128379167095512574;
+const ONE_SQRT_PI: f64 = 0.564189583547756287;
+const REL_ERROR:   f64 = 1e-12;
+
+// ---------------------------------------------------------------------------
+// Cephes word-encoded float constants for igam
+// ---------------------------------------------------------------------------
+
+pub const A_U16: [[u16; 4]; 5] = [
+    [0x6661, 0x2733, 0x9850, 0x3F4A],
+    [0xE943, 0xB580, 0x7FBD, 0xBF43],
+    [0x5EBB, 0x20DC, 0x019F, 0x3F4A],
+    [0xA5A1, 0x16B0, 0xC16C, 0xBF66],
+    [0x554B, 0x5555, 0x5555, 0x3FB5],
+];
+
+pub const B_U16: [[u16; 4]; 6] = [
+    [0x6761, 0x8ff3, 0x8901, 0xc095],
+    [0xb93e, 0x355b, 0xf234, 0xc0e2],
+    [0x89e5, 0xf890, 0x3d73, 0xc114],
+    [0xdb51, 0xf994, 0xbc82, 0xc131],
+    [0xf20b, 0x0219, 0x4589, 0xc13a],
+    [0x055e, 0x5418, 0x0c67, 0xc12a],
+];
+
+pub const C_U16: [[u16; 4]; 6] = [
+    [0x12b2, 0x1cf3, 0xfd0d, 0xc075],
+    [0xd757, 0x7b89, 0xaa0d, 0xc0d0],
+    [0x4c9b, 0xb974, 0xeb84, 0xc10a],
+    [0x0043, 0x7195, 0x6286, 0xc131],
+    [0xf34c, 0x892f, 0x5255, 0xc143],
+    [0xe14a, 0x6a11, 0xce4b, 0xc13e],
+];
+
+pub static A_F64: Lazy<[f64; 5]> = Lazy::new(|| [
+    cephes_words_to_f64(A_U16[0]),
+    cephes_words_to_f64(A_U16[1]),
+    cephes_words_to_f64(A_U16[2]),
+    cephes_words_to_f64(A_U16[3]),
+    cephes_words_to_f64(A_U16[4]),
+]);
+
+pub static B_F64: Lazy<[f64; 6]> = Lazy::new(|| [
+    cephes_words_to_f64(B_U16[0]),
+    cephes_words_to_f64(B_U16[1]),
+    cephes_words_to_f64(B_U16[2]),
+    cephes_words_to_f64(B_U16[3]),
+    cephes_words_to_f64(B_U16[4]),
+    cephes_words_to_f64(B_U16[5]),
+]);
+
+pub static C_F64: Lazy<[f64; 6]> = Lazy::new(|| [
+    cephes_words_to_f64(C_U16[0]),
+    cephes_words_to_f64(C_U16[1]),
+    cephes_words_to_f64(C_U16[2]),
+    cephes_words_to_f64(C_U16[3]),
+    cephes_words_to_f64(C_U16[4]),
+    cephes_words_to_f64(C_U16[5]),
+]);
+
+// ---------------------------------------------------------------------------
+// NIST Internal helpers
+// ---------------------------------------------------------------------------
+
+pub static TEMPLATE_9: LazyLock<Vec<&'static [u8]>> = LazyLock::new(|| {
+    const VALUES: [u16; 148] = [
+        1,3,5,7,9,11,13,15,17,19,21,23,25,27,29,31,35,37,39,41,43,45,47,51,53,55,57,59,61,63,67,69,
+        71,75,77,79,83,85,87,91,93,95,101,103,107,109,111,117,119,123,125,127,131,135,139,143,147,
+        151,155,159,163,167,171,175,179,183,187,191,199,207,215,223,239,255,256,272,288,296,304,312,
+        320,324,328,332,336,340,344,348,352,356,360,364,368,372,376,380,384,386,388,392,394,400,402,
+        404,408,410,416,418,420,424,426,428,432,434,436,440,442,444,448,450,452,454,456,458,460,464,
+        466,468,470,472,474,476,480,482,484,486,488,490,492,494,496,498,500,502,504,506,508,510
+    ];
+
+    VALUES.iter().map(|&value| {
+        let mut bits = [0u8; 9];
+        for i in 0..9 {
+            bits[8 - i] = ((value >> i) & 1) as u8;
+        }
+        Box::leak(Box::new(bits)) as &'static [u8]
+    }).collect()
+});
+
+pub static TEMPLATE_10: LazyLock<Vec<&'static [u8]>> = LazyLock::new(|| {
+    const VALUES: [u16; 284] = [
+        1,3,5,7,9,11,13,15,17,19,21,23,25,27,29,31,35,37,39,41,43,45,47,49,51,53,55,57,59,61,63,67,
+        69,71,73,75,77,79,83,85,87,89,91,93,95,101,103,105,107,109,111,115,117,119,121,123,125,127,
+        131,133,135,139,141,143,147,149,151,155,157,159,163,167,171,173,175,179,181,183,187,189,191,
+        197,199,203,205,207,213,215,219,221,223,229,235,237,239,245,247,251,253,255,259,263,267,271,
+        275,279,283,287,291,295,299,303,307,311,315,319,323,327,331,335,339,343,347,351,355,359,367,
+        371,375,379,383,391,399,407,415,423,431,439,447,463,479,511,512,544,560,576,584,592,600,608,
+        616,624,632,640,644,648,652,656,664,668,672,676,680,684,688,692,696,700,704,708,712,716,720,
+        724,728,732,736,740,744,748,752,756,760,764,768,770,772,776,778,784,786,788,794,800,802,804,
+        808,810,816,818,820,824,826,832,834,836,840,842,844,848,850,852,856,860,864,866,868,872,874,
+        876,880,882,884,888,890,892,896,898,900,902,904,906,908,912,914,916,918,920,922,928,930,932,
+        934,936,938,940,944,946,948,950,952,954,956,960,962,964,966,968,970,972,974,976,978,980,982,
+		984,986,988,992,994,996,998,1000,1002,1004,1006,1008,1010,1012,1014,1016,1018,1020,1022		
+    ];
+
+    VALUES.iter().map(|&value| {
+        let mut bits = [0u8; 10];
+        for i in 0..10 {
+            bits[9 - i] = ((value >> i) & 1) as u8;
+        }
+        Box::leak(Box::new(bits)) as &'static [u8]
+    }).collect()
+});
+
+fn bits_to_pm1_sum(bits: &[u8]) -> i64 {
+    bits.iter().map(|&b| if b == 0 { -1 } else { 1 }).sum()
+}
+
+fn pr_overlapping(u: i32, eta: f64) -> f64 {
+    if u == 0 {
+        (-eta).exp()
+    } else {
+        let mut sum = 0.0;
+        for l in 1..=u {
+            let term =
+                -eta
+                - (u as f64) * (2.0f64).ln()
+                + (l as f64) * eta.ln()
+                - safe_lgamma("Pr Overlapping 1", (l + 1) as f64)
+                + safe_lgamma("Pr Overlapping 2", u as f64)
+                - safe_lgamma("Pr Overlapping 3", l as f64)
+                - safe_lgamma("Pr Overlapping 4", (u - l + 1) as f64);
+            sum += term.exp();
+        }
+        sum
+    }
+}
+
+// ================================================================
+//  Math Helpers (Pure Rust, No Crates)
+//  These appear at the top of the file.
+// ================================================================
+
+// ---------------------------------------------------------------
+// Normal CDF using Abramowitz-Stegun approximation
+// ---------------------------------------------------------------
+pub fn normal_cdf(x: f64) -> f64 {
+    // constants for approximation
+    let a1 = 0.254829592;
+    let a2 = -0.284496736;
+    let a3 = 1.421413741;
+    let a4 = -1.453152027;
+    let a5 = 1.061405429;
+    let p  = 0.3275911;
+
+    let sign = if x < 0.0 { -1.0 } else { 1.0 };
+    let t = 1.0 / (1.0 + p * x.abs());
+    let y = 1.0 - ((((a5*t + a4)*t + a3)*t + a2)*t + a1)*t * (-x*x).exp();
+
+    0.5 * (1.0 + sign as f64 * y)
+}
+
+/*
+/// Normal CDF using Abramowitz-Stegun approximation (accurate to 1.5e-7)
+fn normal_cdf(x: f64) -> f64 {
+    if x < -10.0 {
+        return 0.0;
+    }
+    if x > 10.0 {
+        return 1.0;
+    }
+    
+    let t = 1.0 / (1.0 + 0.2316419 * x.abs());
+    let d = 0.3989423 * (-x * x / 2.0).exp();
+    let p = d * t * (0.3193815 + t * (-0.3565638 + t * (1.781478 + t * (-1.821256 + t * 1.330274))));
+    
+    if x > 0.0 {
+        1.0 - p
+    } else {
+        p
+    }
+}
+*/
+
+// ---------------------------------------------------------------
+// Chi-square CDF (lower incomplete gamma approximation)
+// ---------------------------------------------------------------
+pub fn chi_square_cdf(x: f64, k: f64) -> f64 {
+    if x <= 0.0 { return 0.0; }
+
+    // Using regularized gamma function approximation
+    let a = k / 2.0;
+    let g = gamma(a);
+    let lower = lower_incomplete_gamma(a, x / 2.0);
+
+    lower / g
+}
+
+// ---------------------------------------------------------------
+// Gamma function (Lanczos approximation)
+// ---------------------------------------------------------------
+pub fn gamma(z: f64) -> f64 {
+    let p = [
+        676.5203681218851,
+        -1259.1392167224028,
+        771.32342877765313,
+        -176.61502916214059,
+        12.507343278686905,
+        -0.13857109526572012,
+        9.9843695780195716e-6,
+        1.5056327351493116e-7,
+    ];
+
+    if z < 0.5 {
+        return PI / ((PI * z).sin() * gamma(1.0 - z));
+    }
+
+    let z = z - 1.0;
+    let mut x = 0.99999999999980993;
+
+    for (i, &p_i) in p.iter().enumerate() {
+        x += p_i / (z + (i as f64) + 1.0);
+    }
+
+    let t = z + p.len() as f64 - 0.5;
+    (2.0 * PI).sqrt() * t.powf(z + 0.5) * (-t).exp() * x
+}
+
+// ---------------------------------------------------------------
+// Lower incomplete gamma (series expansion)
+// ---------------------------------------------------------------
+pub fn lower_incomplete_gamma(s: f64, x: f64) -> f64 {
+    let mut sum = 1.0 / s;
+    let mut term = 1.0 / s;
+
+    for n in 1..100 {
+        term *= x / (s + n as f64);
+        sum += term;
+        if term.abs() < 1e-12 { break; }
+    }
+
+    sum * x.powf(s) * (-x).exp()
+}
+
+// ---------------------------------------------------------------
+// Kolmogorov–Smirnov CDF
+// ---------------------------------------------------------------
+pub fn ks_cdf(d: f64, n: usize) -> f64 {
+    if n == 0 { return 0.0; }
+    let nd = (n as f64).sqrt() * d;
+    let mut sum = 0.0;
+    for k in -100..100 {
+        let kf = k as f64;
+        let term = (-2.0 * (kf * kf) * nd * nd).exp();
+        sum += term;
+    }
+    1.0 - 2.0 * sum
+}
+
+// ---------------------------------------------------------------
+// Simple DFT (slow O(n^2), but pure Rust and dependency-free)
+// ---------------------------------------------------------------
+pub fn dft_real(input: &[f64]) -> Vec<(f64, f64)> {
+    let n = input.len();
+    let mut out = vec![(0.0, 0.0); n];
+
+    for k in 0..n {
+        let mut re = 0.0;
+        let mut im = 0.0;
+        for t in 0..n {
+            let angle = -2.0 * PI * (k as f64) * (t as f64) / (n as f64);
+            re += input[t] * angle.cos();
+            im += input[t] * angle.sin();
+        }
+        out[k] = (re, im);
+    }
+
+    out
+}
+
+// ---------------------------------------------------------------
+//  Simple correlation function
+// ---------------------------------------------------------------
+fn correlation(x: &[f64], y: &[f64]) -> f64 {
+    let n = x.len();
+    if n == 0 || y.len() != n {
+        return 0.0;
+    }
+
+    let n_f = n as f64;
+
+    let mean_x = x.iter().sum::<f64>() / n_f;
+    let mean_y = y.iter().sum::<f64>() / n_f;
+
+    let mut num = 0.0;
+    let mut den_x = 0.0;
+    let mut den_y = 0.0;
+
+    for i in 0..n {
+        let dx = x[i] - mean_x;
+        let dy = y[i] - mean_y;
+        num += dx * dy;
+        den_x += dx * dx;
+        den_y += dy * dy;
+    }
+
+    if den_x <= 0.0 || den_y <= 0.0 {
+        return 0.0;
+    }
+
+    num / (den_x.sqrt() * den_y.sqrt())
+}
+
+// ---------------------------------------------------------------
+//  Simple byte histogram
+// ---------------------------------------------------------------
+fn byte_histogram(seg: &[u8]) -> [f64; 256] {
+    let mut freq = [0usize; 256];
+    for &b in seg {
+        freq[b as usize] += 1;
+    }
+
+    let n = seg.len() as f64;
+    let mut hist = [0.0f64; 256];
+    for i in 0..256 {
+        hist[i] = freq[i] as f64 / n;
+    }
+
+    hist
+}
+
+fn cdf_from_hist(hist: &[f64; 256]) -> [f64; 256] {
+    let mut cdf = [0.0f64; 256];
+    let mut sum = 0.0;
+    for i in 0..256 {
+        sum += hist[i];
+        cdf[i] = sum;
+    }
+    cdf
+}
+
+fn wasserstein_1(h1: &[f64; 256], h2: &[f64; 256]) -> f64 {
+    let c1 = cdf_from_hist(h1);
+    let c2 = cdf_from_hist(h2);
+
+    let mut w = 0.0;
+    for i in 0..256 {
+        w += (c1[i] - c2[i]).abs();
+    }
+
+    w
+}
+
+// ---------------------------------------------------------------
+// Utility helpers
+// ---------------------------------------------------------------
+pub fn mean(xs: &[f64]) -> f64 {
+    if xs.is_empty() { return 0.0; }
+    xs.iter().sum::<f64>() / xs.len() as f64
+}
+
+pub fn variance(xs: &[f64]) -> f64 {
+    if xs.len() < 2 { return 0.0; }
+    let m = mean(xs);
+    xs.iter().map(|x| (x - m)*(x - m)).sum::<f64>() / (xs.len() as f64 - 1.0)
+}
+
+fn euclidean_distance(a: &[f64], b: &[f64]) -> f64 {
+    let mut sum = 0.0;
+    for i in 0..a.len() {
+        let d = a[i] - b[i];
+        sum += d * d;
+    }
+    sum.sqrt()
+}
+
+fn clamp01(x: f64) -> f64 {
+    if x < 0.0 { 0.0 }
+    else if x > 1.0 { 1.0 }
+    else { x }
+}
+
+fn safe_log(x: f64) -> f64 {
+    if x <= 0.0 { -1e9 } else { x.ln() }
+}
+
+fn compute_centroid(points: &[&[f64]]) -> Vec<f64> {
+    let dim = points[0].len();
+    let mut c = vec![0.0; dim];
+
+    for p in points {
+        for i in 0..dim {
+            c[i] += p[i];
+        }
+    }
+
+    let n = points.len() as f64;
+    for i in 0..dim {
+        c[i] /= n;
+    }
+
+    c
+}
+
+pub fn subsample_indices(points_len: usize, subsample_size: usize) -> Vec<usize> {
+    if points_len == 0 {
+        return Vec::new();
+    }
+
+    // If we have fewer points than requested, just take all of them
+    if points_len <= subsample_size {
+        return (0..points_len).collect();
+    }
+
+    let mut idx = Vec::with_capacity(subsample_size);
+    let step = points_len as f64 / subsample_size as f64;
+
+    let mut pos = 0.0;
+    for _ in 0..subsample_size {
+        let i = pos as usize;
+        if i < points_len {
+            idx.push(i);
+        }
+        pos += step;
+    }
+
+    idx
+}
+
+fn count_matches(x: &[f64], m: usize, r: f64) -> usize {
+    let n = x.len();
+    if n <= m + 1 {
+        return 0;
+    }
+
+    let mut count = 0usize;
+
+    for i in 0..(n - m) {
+        for j in (i + 1)..(n - m) {
+            let mut ok = true;
+            for k in 0..m {
+                if (x[i + k] - x[j + k]).abs() > r {
+                    ok = false;
+                    break;
+                }
+            }
+            if ok {
+                count += 1;
+            }
+        }
+    }
+
+    count
+}
+
+fn stddev(x: &[f64]) -> f64 {
+    let n = x.len();
+    if n < 2 {
+        return 0.0;
+    }
+
+    let mean = x.iter().sum::<f64>() / n as f64;
+    let var = x.iter()
+        .map(|v| {
+            let d = v - mean;
+            d * d
+        })
+        .sum::<f64>() / (n as f64 - 1.0);
+
+    var.sqrt()
+}
+
+
+// ---------------------------------------------------------------------------
+// Cephes math primitives
+// ---------------------------------------------------------------------------
+
+pub fn cephes_words_to_f64(words: [u16; 4]) -> f64 {
+    let bytes: [u8; 8] = [
+        (words[3] >> 8) as u8, (words[3] & 0xFF) as u8,
+        (words[2] >> 8) as u8, (words[2] & 0xFF) as u8,
+        (words[1] >> 8) as u8, (words[1] & 0xFF) as u8,
+        (words[0] >> 8) as u8, (words[0] & 0xFF) as u8,
+    ];
+    f64::from_be_bytes(bytes)
+}
+
+pub fn erf(x: f64) -> f64 {
+    let xsqr = x * x;
+    if x.abs() > 2.2 {
+        return 1.0 - erfc(x);
+    }
+    let mut sum = x;
+    let mut term = x;
+    let mut j = 1.0_f64;
+
+    // Safety limit: 10,000 iterations max
+    for _ in 0..10000 {
+        term *= xsqr / j;
+        sum -= term / (2.0 * j + 1.0);
+        j += 1.0;
+        term *= xsqr / j;
+        sum += term / (2.0 * j + 1.0);
+        j += 1.0;
+
+        // Escape if we lose precision or hit NaN
+        if sum.abs() < 1e-14 || sum.is_nan() || term.is_nan() { break; }
+        if (term.abs() / sum.abs()) <= REL_ERROR { break; }
+    }
+    TWO_SQRT_PI * sum
+}
+
+pub fn erfc(x: f64) -> f64 {
+    // If x is extremely large, erfc(x) is 0.0. 
+    // This prevents entering the continued fraction loop at all.
+    if x > 20.0 { return 0.0; }
+    if x < -20.0 { return 2.0; }
+
+    if x.abs() < 2.2 { return 1.0 - erf(x); }
+    if x < 0.0 { return 2.0 - erfc(-x); }
+
+    let mut a = 1.0_f64;
+    let mut b = x;
+    let mut c = x;
+    let mut d = x * x + 0.5;
+    let mut n = 1.0_f64;
+    let mut q2 = b / d;
+    let mut q1;
+
+    for _ in 0..1000 {
+        let t = a * n + b * x; a = b; b = t;
+        let t2 = c * n + d * x; c = d; d = t2;
+        n += 0.5;
+        q1 = q2;
+        q2 = b / d;
+
+        if q2.is_nan() || q2.is_infinite() { return 0.0; }
+        if ((q1 - q2).abs() / q2.abs()) <= REL_ERROR { break; }
+    }
+    
+    let result = ONE_SQRT_PI * (-x * x).exp() * q2;
+    if result.is_nan() { 0.0 } else { result }
+}
+
+pub fn safe_erf(label: &str, x: f64) -> f64 {
+    if !x.is_finite() {
+        eprintln!("erf[{}]: non-finite x = {}", label, x);
+        return if x.is_sign_negative() { -1.0 } else { 1.0 };
+    }
+    erf(x)
+}
+
+pub fn safe_erfc(label: &str, x: f64) -> f64 {
+    if !x.is_finite() {
+        eprintln!("erfc[{}]: non-finite x = {}", label, x);
+        return if x.is_sign_negative() { 2.0 } else { 0.0 };
+    }
+    erfc(x)
+}
+
+pub fn cephes_igamc(a: f64, x: f64) -> f64 {
+    if x <= 0.0 || a <= 0.0 { return 1.0; }
+    if x < 1.0 || x < a    { return 1.0 - cephes_igam(a, x); }
+    let ax_ln = a * x.ln() - x - cephes_lgam(a);
+    if ax_ln < -MAXLOG { return 0.0; }
+    let ax = ax_ln.exp();
+    let mut y   = 1.0 - a;
+    let mut z   = x + y + 1.0;
+    let mut c   = 0.0_f64;
+    let mut pkm2 = 1.0_f64;
+    let mut qkm2 = x;
+    let mut pkm1 = x + 1.0;
+    let mut qkm1 = z * x;
+    let mut ans  = pkm1 / qkm1;
+    loop {
+        c   += 1.0; y += 1.0; z += 2.0;
+        let yc = y * c;
+        let pk = pkm1 * z - pkm2 * yc;
+        let qk = qkm1 * z - qkm2 * yc;
+        let t = if qk != 0.0 {
+            let r = pk / qk;
+            let t = ((ans - r) / r).abs();
+            ans = r;
+            t
+        } else { 1.0 };
+        pkm2 = pkm1; pkm1 = pk;
+        qkm2 = qkm1; qkm1 = qk;
+        if pk.abs() > BIG {
+            pkm2 *= BIGINV; pkm1 *= BIGINV;
+            qkm2 *= BIGINV; qkm1 *= BIGINV;
+        }
+        if t <= MACHEP { break; }
+    }
+    ans * ax
+}
+
+pub fn cephes_igam(a: f64, x: f64) -> f64 {
+    if x <= 0.0 || a <= 0.0 { return 0.0; }
+    if x > 1.0 && x > a     { return 1.0 - cephes_igamc(a, x); }
+    let ax_ln = a * x.ln() - x - cephes_lgam(a);
+    if ax_ln < -MAXLOG { return 0.0; }
+    let ax  = ax_ln.exp();
+    let mut r   = a;
+    let mut c   = 1.0_f64;
+    let mut ans = 1.0_f64;
+    loop {
+        r   += 1.0;
+        c   *= x / r;
+        ans += c;
+        if c / ans <= MACHEP { break; }
+    }
+    ans * ax / a
+}
+
+pub fn cephes_lgam(x: f64) -> f64 {
+    gamma::ln_gamma(x)
+}
+
+pub fn safe_igamc(label: &str, a: f64, x: f64) -> f64 {
+    if !a.is_finite() || !x.is_finite() {
+        eprintln!("igamc[{}]: non-finite a={} x={}", label, a, x);
+        return 0.0;
+    }
+    if a <= 0.0 || x < 0.0 {
+        eprintln!("igamc[{}]: invalid a={} x={}", label, a, x);
+        return 0.0;
+    }
+    cephes_igamc(a, x)
+}
+
+pub fn lgamma_unsafe(x: f64) -> f64 { gamma::ln_gamma(x) }
+
+pub fn safe_lgamma(label: &str, x: f64) -> f64 {
+    if !x.is_finite() || x <= 0.0 {
+        eprintln!("lgamma[{}]: invalid x = {}", label, x);
+        return f64::INFINITY;
+    }
+    let v = gamma::ln_gamma(x);
+    if !v.is_finite() {
+        eprintln!("lgamma[{}]: non-finite result for x={}", label, x);
+        return f64::INFINITY;
+    }
+    v
+}
+
+pub fn normal_cdf_unsafe(x: f64) -> f64 {
+    const SQRT2: f64 = 1.414213562373095048801688724209698078569672;
+    if x > 0.0 {
+        0.5 * (1.0 + safe_erf("normal_cdf_unsafe 1", x / SQRT2))
+    } else {
+        0.5 * (1.0 - safe_erf("normal_cdf_unsafe 2", -x / SQRT2))
+    }
+}
+
+pub fn safe_normal_cdf(label: &str, x: f64) -> f64 {
+    if !x.is_finite() {
+        eprintln!("normal_cdf[{}]: non-finite x = {}", label, x);
+        return if x.is_sign_negative() { 0.0 } else { 1.0 };
+    }
+    normal_cdf_unsafe(x)
+}
+
+const ANCHORS: &[(f64, f64)] = &[
+    (128.0,   6.55),
+	(192.0,   6.94),
+    (256.0,   7.17),
+	(384.0,   7.44),
+    (512.0,   7.59),
+	(768.0,   7.74),
+    (1024.0,  7.81),
+	(2048.0,  7.91),
+	(4096.0,  7.95),
+    (16384.0, 7.989),
+	(65536.0, 7.997191),
+	(131072.0, 8.0),	
+];
+
+pub fn mean_entropy_from_block_size(block_size: usize) -> f64 {
+    let b = block_size as f64;
+
+    // clamp outside range
+    if b <= ANCHORS[0].0 {
+        return ANCHORS[0].1;
+    }
+    if b >= ANCHORS[ANCHORS.len() - 1].0 {
+        return ANCHORS[ANCHORS.len() - 1].1;
+    }
+
+    let lb = b.log2();
+
+    // find segment
+    for w in ANCHORS.windows(2) {
+        let (b0, e0) = w[0];
+        let (b1, e1) = w[1];
+
+        let lb0 = b0.log2();
+        let lb1 = b1.log2();
+
+        if lb >= lb0 && lb <= lb1 {
+            let t = (lb - lb0) / (lb1 - lb0);
+            return e0 + t * (e1 - e0);
+        }
+    }
+
+    // fallback (should never hit)
+    ANCHORS[ANCHORS.len() - 1].1
+}
+
+#[inline] pub fn sanitize_p(p: f64) -> f64 { if p.is_nan() || p < 0.0 { 0.0 } else { p } }
+
+// ---------------------------------------------------------------------------
+// Binary matrix rank helper
+// ---------------------------------------------------------------------------
+
+#[derive(Clone)]
+pub struct Matrix32 {
+    pub rows: [u32; 32],
+}
+
+impl Matrix32 {
+    pub fn new() -> Self { Matrix32 { rows: [0u32; 32] } }
+
+    pub fn from_bits(bits: &[u8], bit_index: usize) -> Self {
+        let mut m = Matrix32::new();
+        for r in 0..32 {
+            let mut row_val: u32 = 0;
+            for c in 0..32 {
+                let idx = bit_index + r * 32 + c;
+                let bit = bits[idx] & 1;
+                row_val |= (bit as u32) << c;
+            }
+            m.rows[r] = row_val;
+        }
+        m
+    }
+
+    pub fn rank(&self) -> usize {
+        let mut rows = self.rows.clone();
+        let mut rank = 0usize;
+        for col in (0..32).rev() {
+            let mut pivot = None;
+            for r in rank..32 {
+                if ((rows[r] >> col) & 1) == 1 { pivot = Some(r); break; }
+            }
+            if let Some(piv_row) = pivot {
+                rows.swap(rank, piv_row);
+                for r in 0..32 {
+                    if r != rank && ((rows[r] >> col) & 1) == 1 {
+                        rows[r] ^= rows[rank];
+                    }
+                }
+                rank += 1;
+            }
+        }
+        rank
+    }
+}
+
+// ================================================================
+//  BitByteStream (for completeness in this file)
+// ================================================================
+pub fn get_sampling_frequency_bucket(n: usize) -> usize {
+    if      n <   1_000_000                   { 0 }
+	else if n >=  1_000_000 && n <  2_500_000 { 1 }
+	else if n >=  2_500_000 && n <  5_000_000 { 2 }
+    else if n >=  5_000_000 && n < 10_000_000 { 3 } 
+    else if n >= 10_000_000 && n < 25_000_000 { 4 }        
+    else if n >= 25_000_000 && n < 50_000_000 { 5 }
+    else                                      { 6 }    
+}
+
+#[derive(Debug, Clone)]
+pub enum EntropyMode {
+    Global,
+    Conditional,
+}
+
+#[derive(Debug, Clone)]
+pub struct BitByteStream {
+    pub bits: Vec<u8>,
+    pub bit_len: usize,
+
+    pub bytes: Vec<u8>,
+    pub byte_len: usize,
+
+    pub bit_histogram: [usize; 2],
+    pub byte_histogram: [usize; 256],
+    pub byte_expected: f64,
+
+    pub cusum_s: i64,
+    pub cusum_sup: i64,
+    pub cusum_inf: i64,
+
+    // Unified 3‑D embedding
+    pub points_3d: Vec<(u8, u8, u8)>,
+    pub points_len: usize,
+
+    // Unified grid + prefix cube
+    pub grid: Vec<Vec<Vec<u32>>>,
+    pub prefix: Vec<Vec<Vec<u32>>>,
+    pub grid_resolution: usize,
+
+    // Unified subsample for correlation dimension
+    pub subsample: Vec<usize>,
+
+    // Unified transition model (None = 0‑order KL)
+    pub transition_matrix: Option<Vec<usize>>,
+    pub use_transition_kl: bool,
+    pub kl_scale: f64,
+
+    // Unified Star Discrepancy
+    pub star_scale: f64,
+
+    // Unified chaos parameters
+    pub chaos_c_values: Vec<f64>,
+	pub chaos_scale: f64,
+
+    // Unified clustering parameters
+    pub cluster_k: usize,
+	pub cluster_iters: usize,
+	pub cluster_scale: f64,
+
+    // Unified Wasserstein parameters
+    pub wasserstein_k: usize,
+    pub wasserstein_expected_var: f64,
+	pub wasserstein_scale: f64,
+
+    // Unified entropy stability mode
+    pub entropy_mode: EntropyMode,
+    pub entropy_segments: usize,
+    pub entropy_scale: f64,
+
+    // Unified sampled entropy
+	pub sampen_m: usize,
+    pub sampen_r_scale: f64,
+    pub sampen_limit: usize,
+    pub sampen_expected: f64,
+
+    // Unified snapshot distance
+    pub snap_k: usize,
+    pub snap_expected_var: f64,
+
+    // Unified correlation dimension radii
+    pub corr_radii: Vec<f64>,
+	pub corr_scale: f64,
+	
+	// Unified martingale betting test
+    pub martingale_f: f64,
+    pub martingale_use_periodicity: bool,
+    pub martingale_strategy_count: usize,
+    pub martingale_start_idx: usize,
+    pub martingale_scale: f64,
+	
+	// permutation entropy test
+	pub perm_d: usize,
+    pub perm_min_n: usize,
+    pub perm_expected: f64,
+    pub perm_scale: f64,
+	
+	pub fft_bits: Option<Vec<Complex<f64>>>,
+}
+
+impl BitByteStream {
+    pub fn new_from_bytes(bytes: Vec<u8>) -> Self {
+        let mut bits = Vec::with_capacity(bytes.len() * 8);
+
+        for &b in &bytes {
+            for i in (0..8).rev() {
+                bits.push((b >> i) & 1);
+            }
+        }
+
+        Self::initialize(bits, bytes)
+    }
+
+    pub fn new_from_bits(bits: Vec<u8>) -> Self {
+        let bit_len = bits.len();
+
+        // Convert bits → bytes
+        let mut bytes = Vec::with_capacity(bit_len / 8);
+        for chunk in bits.chunks(8) {
+            let mut byte = 0u8;
+            for &bit in chunk {
+                byte = (byte << 1) | bit;
+            }
+            bytes.push(byte);
+        }
+
+        Self::initialize(bits, bytes)
+    }
+     
+    fn initialize(bits: Vec<u8>, bytes: Vec<u8>) -> Self {
+        let bit_len = bits.len();
+        let byte_len = bytes.len();
+
+        // --------------------------------
+        // Bit histogram
+        // --------------------------------
+        let mut bit_hist = [0usize; 2];
+        for &b in &bits {
+            bit_hist[b as usize] += 1;
+        }
+
+        // --------------------------------
+        // Byte histogram
+        // --------------------------------
+        let mut byte_hist = [0usize; 256];
+        for &b in &bytes {
+            byte_hist[b as usize] += 1;
+        }
+
+        let expected = byte_len as f64 / 256.0;
+
+        // --------------------------------
+        // CUSUM precomputation
+        // --------------------------------
+        let mut s: i64 = 0;
+        let mut sup: i64 = 0;
+        let mut inf: i64 = 0;
+
+        for &bit in &bits {
+            if bit == 1 { s += 1; } else { s -= 1; }
+            if s > sup { sup = s; }
+            if s < inf { inf = s; }
+        }
+
+        // --------------------------------
+        // Determine bucket once
+        // --------------------------------
+        let bucket = get_sampling_frequency_bucket(bit_len);
+
+        // --------------------------------
+        // Star Discrepancy scale factor
+        // --------------------------------
+		let star_scale = [1.0, 1.0, 1.1, 1.2, 1.3, 1.4, 1.5][bucket];
+
+        // --------------------------------
+        // Build 3‑D points (byte triplets)
+        // --------------------------------
+        let mut points_3d = Vec::with_capacity(byte_len / 3);
+        for i in (0..byte_len.saturating_sub(2)).step_by(3) {
+            points_3d.push((bytes[i], bytes[i + 1], bytes[i + 2]));
+        }
+        let points_len = points_3d.len();
+
+        // --------------------------------
+        // Unified grid resolution
+        // --------------------------------
+        let grid_resolution = if bucket < 3 { 6 } else { 16 };
+
+        // --------------------------------
+        // Build unified grid
+        // --------------------------------
+        let mut grid = vec![vec![vec![0u32; grid_resolution]; grid_resolution]; grid_resolution];
+
+        for &(x, y, z) in &points_3d {
+            let ix = (x as usize * grid_resolution) / 256;
+            let iy = (y as usize * grid_resolution) / 256;
+            let iz = (z as usize * grid_resolution) / 256;
+            grid[ix][iy][iz] += 1;
+        }
+
+        // --------------------------------
+        // Build unified prefix cube
+        // --------------------------------
+        let mut prefix = vec![vec![vec![0u32; grid_resolution]; grid_resolution]; grid_resolution];
+
+        for i in 0..grid_resolution {
+            for j in 0..grid_resolution {
+                for k in 0..grid_resolution {
+                    let mut sum = grid[i][j][k];
+                    if i > 0 { sum += prefix[i - 1][j][k]; }
+                    if j > 0 { sum += prefix[i][j - 1][k]; }
+                    if k > 0 { sum += prefix[i][j][k - 1]; }
+                    if i > 0 && j > 0 { sum -= prefix[i - 1][j - 1][k]; }
+                    if i > 0 && k > 0 { sum -= prefix[i - 1][j][k - 1]; }
+                    if j > 0 && k > 0 { sum -= prefix[i][j - 1][k - 1]; }
+                    if i > 0 && j > 0 && k > 0 { sum += prefix[i - 1][j - 1][k - 1]; }
+                    prefix[i][j][k] = sum;
+                }
+            }
+        }
+
+        // -------------------------------------------
+        // Unified subsample for correlation dimension
+        // -------------------------------------------
+        let subsample_size = match bucket {
+            0..=2 => 2000,
+            3..=4 => 4000,
+            _     => 8000,
+        };
+
+        let subsample = subsample_indices(points_len, subsample_size);
+
+        // --------------------------------
+        // Unified chaos c-values
+        // --------------------------------
+        let chaos_count = match bucket {
+            0 => 4,
+            1 => 6,
+            2 => 8,
+            3 => 10,
+            4 => 12,
+            5 => 14,
+            _ => 16,
+        };
+
+        let chaos_scale = [1.0, 1.2, 1.4, 1.6, 1.8, 2.0, 2.2][bucket];
+
+        let chaos_c_values = (0..chaos_count)
+            .map(|i| 1.1 + 0.15 * (i as f64))
+            .collect::<Vec<_>>();
+
+        // --------------------------------
+        // Unified clustering parameters
+        // --------------------------------
+        let cluster_k = match bucket {
+            0 | 1 => 8,
+            2     => 12,
+            3 | 4 => 16,
+            5     => 24,
+            _     => 32,
+        };
+
+        let cluster_iters = match cluster_k {
+            8  => 5,
+            12 => 6,
+            16 => 8,
+            24 => 10,
+            _  => 12,
+        };
+
+        let cluster_scale = [1.0, 1.0, 0.9, 0.8, 0.7, 0.6, 0.5][bucket];
+
+        // --------------------------------
+        // Unified Wasserstein parameters
+        // --------------------------------
+        let wasserstein_k = cluster_k;
+        let wasserstein_expected_var = [0.0005, 0.00045, 0.00035, 0.00025, 0.00020, 0.00015, 0.00010][bucket];
+        let wasserstein_scale = [1.0, 1.0, 1.2, 1.4, 1.6, 1.8, 2.0][bucket];
+
+        // --------------------------------
+        // Unified entropy stability mode
+        // --------------------------------
+        let entropy_mode = if bucket < 3 {
+            EntropyMode::Global
+        } else {
+            EntropyMode::Conditional
+        };
+
+        let entropy_segments = match bucket {
+            3 => 4,
+            4 => 6,
+            5 => 8,
+            _ => 10,
+        };
+
+        let entropy_scale = match bucket {
+            0 => 1.0,
+            1 => 1.1,
+            2 => 1.2,
+            3 => 1.3,
+            4 => 1.4,
+            5 => 1.5,
+            _ => 1.6,
+        };
+
+        // --------------------------------
+        // Unified sample entropy
+		// --------------------------------
+		let sampen_m = if bucket <= 2 { 2 } else { 3 };
+        let sampen_r_scale = if sampen_m == 2 { 0.20 } else { 0.15 };
+
+        let sampen_limit = match bucket {
+            0 | 1 => byte_len.min(2000),
+            2 => byte_len.min(3000),
+            3 => byte_len.min(4000),
+            4 => byte_len.min(5000),
+            5 => byte_len.min(6000),
+            _ => byte_len.min(8000),
+        };
+
+        let sampen_expected = if sampen_m == 2 {
+            [2.20, 2.18, 2.16, 2.15, 2.14, 2.13, 2.12][bucket]
+        } else {
+            [3.10, 3.08, 3.06, 3.05, 3.04, 3.03, 3.02][bucket]
+        };
+
+        // -----------------------------
+        // Unified KL mode + scale
+        // -----------------------------
+        let use_transition_kl = bucket >= 3;
+
+        let kl_scale = [1.0, 1.2, 1.4, 1.6, 1.8, 2.0, 2.2][bucket];
+
+        let transition_matrix = if use_transition_kl {
+            let mut t = vec![0usize; 65536];
+            for i in 0..byte_len - 1 {
+                let a = bytes[i] as usize;
+                let b = bytes[i + 1] as usize;
+                t[(a << 8) | b] += 1;
+            }
+            Some(t)
+        } else {
+            None
+        };
+
+        // -----------------------------------
+        // Unified correlation dimension radii
+        // -----------------------------------
+        let corr_r_count = match bucket {
+            0 => 3,
+            1 => 4,
+            2 => 5,
+            3 => 6,
+            4 => 6,
+            5 => 7,
+            _ => 8,
+        };
+
+        let corr_scale = [3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0][bucket];
+
+        let r_min: f64 = 10.0;
+        let r_max: f64 = 120.0;
+
+        let corr_radii = (0..corr_r_count)
+            .map(|i| {
+            let t: f64 = i as f64 / (corr_r_count as f64 - 1.0);
+            r_min * (r_max / r_min).powf(t)
+        })
+        .collect::<Vec<f64>>();
+
+        let snap_k = match bucket {
+            0 | 1 => 8,
+            2     => 12,
+            3 | 4 => 16,
+            5     => 20,
+            _     => 24,
+        };
+
+        // -----------------------------------
+		// Unified martingale test
+		// -----------------------------------
+        let snap_expected_var = [0.010, 0.009, 0.008, 0.007, 0.006, 0.005, 0.004][bucket];
+        let martingale_f = [0.10, 0.10, 0.08, 0.06, 0.05, 0.05, 0.04][bucket];
+        let martingale_use_periodicity = bucket >= 3;
+        let martingale_strategy_count = if martingale_use_periodicity { 5 } else { 4 };
+        let martingale_start_idx = if martingale_use_periodicity { 8 } else { 1 };
+        let martingale_scale = [5.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0][bucket];
+
+        // -----------------------------------
+		// Unified permutation entropy test
+		// -----------------------------------
+        let perm_d = match bucket {
+            0 | 1     => 4,
+            2 | 3 | 4 => 5,
+            _         => 6,
+        };
+
+        let perm_min_n = match bucket {
+            0 => 10_000,
+            1 => 20_000,
+            2 => 50_000,
+            3 => 100_000,
+            4 => 200_000,
+            5 => 500_000,
+            _ => 1_000_000,
+        };
+
+        let perm_expected = match perm_d {
+            4 => 0.99,
+            5 => 0.995,
+            _ => 0.997,
+        };
+
+        let perm_scale = [5.0, 6.0, 8.0, 10.0, 12.0, 14.0, 16.0][bucket];
+
+        let x: Vec<f64> = bits.iter().map(|&b| if b == 1 { 1.0 } else { -1.0 }).collect();
+
+        use rustfft::{num_complex::Complex, FftPlanner};
+        let mut planner = FftPlanner::<f64>::new();
+        let fft = planner.plan_fft_forward(bit_len);
+        let mut buffer: Vec<Complex<f64>> = x.iter().map(|&v| Complex::new(v, 0.0)).collect();
+        fft.process(&mut buffer);
+        let fft_bits = Some(buffer);
+
+        // -----------------------------
+        // Return unified stream
+        // -----------------------------
+        Self {
+            bits,
+            bit_len,
+            bytes,
+            byte_len,
+            bit_histogram: bit_hist,
+            byte_histogram: byte_hist,
+            byte_expected: expected,
+            cusum_s: s,
+            cusum_sup: sup,
+            cusum_inf: inf,
+            points_3d,
+            points_len,
+            grid,
+            prefix,
+            grid_resolution,
+            subsample,
+            transition_matrix,
+            use_transition_kl,
+            kl_scale,
+			star_scale,
+            chaos_c_values,
+			chaos_scale,
+            cluster_k,
+            cluster_iters,
+			cluster_scale,
+            wasserstein_k,
+            wasserstein_expected_var,
+			wasserstein_scale,
+            entropy_mode,
+            entropy_segments,
+			entropy_scale,
+			sampen_m,
+            sampen_r_scale,
+            sampen_limit,
+            sampen_expected,
+			snap_k,
+            snap_expected_var,
+            corr_radii,
+			corr_scale,
+			martingale_f,
+            martingale_use_periodicity,
+            martingale_strategy_count,
+            martingale_start_idx,
+            martingale_scale,
+            perm_d,
+            perm_min_n,
+            perm_expected,
+            perm_scale,
+			fft_bits,
+        }
+    }
+}
+
+//------------------------------------------------------------------------------------
+// Calibrated Tests
+//------------------------------------------------------------------------------------
+
+// ================================================================
+//  3D Random Walk Radius Test
+// ================================================================
+pub fn random_walk_radius_test(stream: &mut BitByteStream) -> f64 {
+    let bits = &stream.bits;
+    let n_bits = bits.len();
+    if n_bits < 300 {
+        return 0.5;
+    }
+
+    let mut x = 0i64;
+    let mut y = 0i64;
+    let mut z = 0i64;
+
+    let mut steps = 0usize;
+
+    // Each 3 bits → one 3D step
+    for i in (0..n_bits - 2).step_by(3) {
+        let dx = if bits[i] == 1 { 1 } else { -1 };
+        let dy = if bits[i+1] == 1 { 1 } else { -1 };
+        let dz = if bits[i+2] == 1 { 1 } else { -1 };
+
+        x += dx;
+        y += dy;
+        z += dz;
+
+        steps += 1;
+    }
+
+    if steps < 10 {
+        return 0.5;
+    }
+
+    let r2 = (x*x + y*y + z*z) as f64;
+    let n = steps as f64;
+
+    // Under randomness: R^2 / n ~ Chi-square(df=3)
+    let stat = r2 / n;
+    let df = 3.0;
+
+    sanitize_p(1.0 - chi_square_cdf(stat, df))
+}
+
+// ================================================================
+// NIST Approximate Entropy
+// ================================================================
+pub fn nist_approximate_entropy_test(stream: &mut BitByteStream) -> f64 {
+    let bits = &stream.bits;
+    let n = bits.len();
+    let m = 2usize;
+    let seq_length = n;
+    let mut ap_en_arr = [0.0_f64; 2];
+    let mut r = 0usize;
+
+    for block_size in m..=m + 1 {
+        let num_blocks = seq_length;
+        let pow_len = (1usize << (block_size + 1)) - 1;
+        let mut p = vec![0usize; pow_len];
+
+        for i in 0..num_blocks {
+            let mut k = 1usize;
+            for j in 0..block_size {
+                k <<= 1;
+                if bits[(i + j) % seq_length] == 1 {
+                    k += 1;
+                }
+            }
+            p[k - 1] += 1;
+        }
+
+        let mut sum = 0.0_f64;
+        let mut index = (1usize << block_size) - 1;
+        let limit = 1usize << block_size;
+
+        for _ in 0..limit {
+            if p[index] > 0 {
+                let freq = p[index] as f64 / num_blocks as f64;
+                sum += p[index] as f64 * freq.ln();
+            }
+            index += 1;
+        }
+        sum /= num_blocks as f64;
+        ap_en_arr[r] = sum;
+        r += 1;
+    }
+
+    let ap_en = ap_en_arr[0] - ap_en_arr[1];
+    let chi_sq = 2.0 * (seq_length as f64) * (2.0_f64.ln() - ap_en);
+    let df = (1usize << (m - 1)) as f64;
+
+    sanitize_p(safe_igamc("approximate_entropy", df, chi_sq / 2.0))
+}
+
+// ================================================================
+//  Byte Frequency Test
+// ================================================================
+pub fn byte_frequency_test(stream: &mut BitByteStream) -> f64 { 
+    let counts = &stream.byte_histogram;
+	let mut chi_sq = 0.0;
+    for &c in counts {
+        let diff = c as f64 - stream.byte_expected;
+        chi_sq += diff * diff / stream.byte_expected;
+    }   
+    sanitize_p(1.0 - chi_square_cdf(chi_sq, 255.0))
+}
+
+
+// ----------------------------------------------------------------
+// NIST TESTS MODIFIED FOR TEST HARNESS
+// ----------------------------------------------------------------
+
+pub fn calculate_best_m(n: usize) -> usize {
+    let base_m = 500.0;    
+    let scaled = base_m * (n as f64 / 1_000_000.0).sqrt();  
+    let m = scaled.clamp(500.0, 2000.0);
+    m.round() as usize
+}
+
+// ----------------------------------------------------------------
+// NIST Frequency
+// ----------------------------------------------------------------
+pub fn nist_frequency_test(stream: &mut BitByteStream) -> f64 {
+    let n = stream.bits.len();    
+
+    let mut sum: i64 = 0;
+    for &b in &stream.bits {
+        sum += if b == 1 { 1 } else { -1 };
+    }
+
+    let s_obs = (sum.abs() as f64) / (n as f64).sqrt();
+    sanitize_p(safe_erfc("frequency test", s_obs / 2.0f64.sqrt()))
+}
+
+// ----------------------------------------------------------------
+// NIST Block Frequency
+// ----------------------------------------------------------------
+pub fn nist_block_frequency_test(stream: &mut BitByteStream) -> f64 {
+    let bits = &stream.bits;
+    let n = bits.len();
+    let m = calculate_best_m(n);
+
+    if n < m || m == 0 {
+        return 0.0;
+    }
+
+    let n_blocks = n / m;
+    if n_blocks == 0 {
+        return 0.0;
+    }
+
+    let mut sum = 0.0;
+    for i in 0..n_blocks {
+        let mut block_sum = 0usize;
+        for j in 0..m {
+            block_sum += bits[i * m + j] as usize;
+        }
+        let pi = block_sum as f64 / m as f64;
+        let v = pi - 0.5;
+        sum += v * v;
+    }
+
+    let chi_sq = 4.0 * (m as f64) * sum;
+    sanitize_p(cephes_igamc((n_blocks as f64) / 2.0, chi_sq / 2.0))
+}
+
+// ----------------------------------------------------------------
+// NIST Runs
+// ----------------------------------------------------------------
+pub fn nist_runs_test(stream: &mut BitByteStream) -> f64 {
+    let bits = &stream.bits;
+    let n = bits.len();
+    let ones = bits.iter().filter(|&&b| b == 1).count() as f64;
+    let pi_obs = ones / n as f64;
+    let tau = 2.0 / (n as f64).sqrt();
+
+    if (pi_obs - 0.5).abs() >= tau {
+        return 0.0;
+    }
+
+    let mut v_obs = 1.0;
+    for i in 1..n {
+        if bits[i] != bits[i - 1] {
+            v_obs += 1.0;
+        }
+    }
+
+    let num = v_obs - 2.0 * (n as f64) * pi_obs * (1.0 - pi_obs);
+    let den = 2.0 * pi_obs * (1.0 - pi_obs) * (2.0 * n as f64).sqrt();
+    
+    sanitize_p(erfc((num / den).abs()))
+}
+
+// ----------------------------------------------------------------
+// NIST Longest Run of Ones
+// ----------------------------------------------------------------
+pub fn nist_longest_run_of_ones_test(stream: &mut BitByteStream) -> f64 {
+    let bits = &stream.bits;
+    let n = bits.len();
+
+    let (k, m, v, pi): (usize, usize, [usize; 7], [f64; 7]) = if n < 6272 {
+        (3, 8, [1, 2, 3, 4, 0, 0, 0], [0.21484375, 0.3671875, 0.23046875, 0.1875, 0.0, 0.0, 0.0])
+    } else if n < 750_000 {
+        (5, 128, [4, 5, 6, 7, 8, 9, 0], [0.1174035788, 0.2429559590, 0.2493634830, 0.1751770600, 0.1027010710, 0.1123988470, 0.0])
+    } else {
+        (6, 10_000, [10, 11, 12, 13, 14, 15, 16], [0.0882, 0.2092, 0.2483, 0.1933, 0.1208, 0.0675, 0.0727])
+    };
+
+    let n_blocks = n / m;
+    if n_blocks == 0 {
+        return 0.0;
+    }
+
+    let mut nu = vec![0usize; k + 1];
+    for i in 0..n_blocks {
+        let start = i * m;
+        let block = &bits[start..start + m];
+        let mut max_run = 0usize;
+        let mut run = 0usize;
+        for &b in block {
+            if b == 1 {
+                run += 1;
+                if run > max_run { max_run = run; }
+            } else {
+                run = 0;
+            }
+        }
+        let idx = if max_run < v[0] {
+            0
+        } else if max_run > v[k] {
+            k
+        } else {
+            let mut bin = 0;
+            for j in 0..=k {
+                if max_run == v[j] { bin = j; break; }
+            }
+            bin
+        };
+        nu[idx] += 1;
+    }
+
+    let mut chi_sq = 0.0;
+    let n_blocks_f = n_blocks as f64;
+    for i in 0..=k {
+        let expected = n_blocks_f * pi[i];
+        if expected > 0.0 {
+            let diff = nu[i] as f64 - expected;
+            chi_sq += diff * diff / expected;
+        }
+    }
+
+    sanitize_p(safe_igamc("longest_run_of_ones", (k as f64) / 2.0, chi_sq / 2.0))    
+}
+
+// ----------------------------------------------------------------
+// NIST Binary Matrix Rank
+// ----------------------------------------------------------------
+pub fn nist_binary_matrix_rank_test(stream: &mut BitByteStream) -> f64 {
+    let bits = &stream.bits;
+    let n = bits.len();
+    let matrix_bits = 32 * 32;
+    let n_matrices = n / matrix_bits;
+
+    if n_matrices == 0 {
+        return 0.0;
+    }
+
+    fn rank_prob(r: i32, m: i32, q: i32) -> f64 {
+        let mut product = 1.0_f64;
+        for i in 0..r {
+            let a = 1.0 - 2f64.powi(i - m);
+            let b = 1.0 - 2f64.powi(i - q);
+            let c = 1.0 - 2f64.powi(i - r);
+            product *= (a * b) / c;
+        }
+        let exponent = r * (m + q - r) - m * q;
+        2f64.powi(exponent) * product
+    }
+
+    let p32 = rank_prob(32, 32, 32);
+    let p31 = rank_prob(31, 32, 32);
+    let p30 = 1.0 - (p32 + p31);
+
+    let mut f32c = 0usize;
+    let mut f31c = 0usize;
+
+    for i in 0..n_matrices {
+        let r = Matrix32::from_bits(bits, i * matrix_bits).rank();
+        if r == 32 {
+            f32c += 1;
+        } else if r == 31 {
+            f31c += 1;
+        }
+    }
+
+    let f30c = n_matrices - (f32c + f31c);
+    let n_f = n_matrices as f64;
+
+    let chi_sq = (f32c as f64 - n_f * p32).powi(2) / (n_f * p32)
+        + (f31c as f64 - n_f * p31).powi(2) / (n_f * p31)
+        + (f30c as f64 - n_f * p30).powi(2) / (n_f * p30);
+    
+    sanitize_p((-chi_sq / 2.0).exp())    
+}
+
+// ----------------------------------------------------------------
+// NIST Serial P1 Test (patched to avoid overflow / OOB)
+// ----------------------------------------------------------------
+pub fn nist_serial_p1_test(stream: &mut BitByteStream) -> f64 {
+    let bits = &stream.bits;
+    let n = bits.len();
+    let m_raw = calculate_best_m(n).max(2);
+    let m = m_raw.min(16);
+    let m_i = m as i32;
+
+    fn psi2(m: i32, n: usize, eps: &[u8]) -> f64 {
+        if m <= 0 {
+            return 0.0;
+        }
+        let m_usize = m as usize;
+
+        // Prevent shift overflow: (m_usize + 1) must be < number of bits in usize
+        let max_shift = usize::BITS as usize - 1;
+        if m_usize + 1 >= max_shift {
+            return 0.0;
+        }
+
+        let num_blocks = n as f64;
+        let pow_len = (1usize << (m_usize + 1)) - 1;
+        let mut p = vec![0u32; pow_len];
+
+        for i in 0..n {
+            let mut k = 1usize;
+            for j in 0..m_usize {
+                let bit = eps[(i + j) % n];
+                if bit == 0 {
+                    k <<= 1;
+                } else {
+                    k = (k << 1) + 1;
+                }
+            }
+            // k is in [2^m, 2^(m+1)-1], so k-1 is in [2^m-1, 2^(m+1)-2]
+            // and fits in p[..pow_len] as long as pow_len was computed safely.
+            p[k - 1] += 1;
+        }
+
+        let start = (1usize << m_usize) - 1;
+        let end = (1usize << (m_usize + 1)) - 1;
+        let mut sum = 0.0;
+        for i in start..end {
+            let c = p[i] as f64;
+            sum += c * c;
+        }
+        sum * ((1usize << m_usize) as f64) / num_blocks - num_blocks
+    }
+
+    let psim0 = psi2(m_i, n, bits);
+    let psim1 = psi2(m_i - 1, n, bits);
+    let del1 = psim0 - psim1;
+
+    sanitize_p(safe_igamc("serial_p1", 2f64.powi(m_i - 1) / 2.0, del1 / 2.0))
+}
+// ----------------------------------------------------------------
+// NIST Serial P2 Test
+// ----------------------------------------------------------------
+pub fn nist_serial_p2_test(stream: &mut BitByteStream) -> f64 {
+    let bits = &stream.bits;
+    let n = bits.len();    
+    let m_raw = calculate_best_m(n).max(2);
+    let m = m_raw.min(16);
+
+    fn psi2(m: i32, n: usize, eps: &[u8]) -> f64 {
+        if m <= 0 { return 0.0; }
+        let m_usize = m as usize;
+        let num_blocks = n as f64;
+        let pow_len = (1usize << (m_usize + 1)) - 1;
+        let mut p = vec![0u32; pow_len];
+        for i in 0..n {
+            let mut k = 1usize;
+            for j in 0..m_usize {
+                let bit = eps[(i + j) % n];
+                if bit == 0 { k <<= 1; } else { k = (k << 1) + 1; }
+            }
+            p[k - 1] += 1;
+        }
+        let start = (1usize << m_usize) - 1;
+        let end = (1usize << (m_usize + 1)) - 1;
+        let mut sum = 0.0;
+        for i in start..end { let c = p[i] as f64; sum += c * c; }
+        sum * ((1usize << m_usize) as f64) / num_blocks - num_blocks
+    }
+
+    let m_i = m as i32;
+    let psim0 = psi2(m_i, n, bits);
+    let psim1 = psi2(m_i - 1, n, bits);
+    let psim2 = psi2(m_i - 2, n, bits);
+    let del2 = psim0 - 2.0 * psim1 + psim2;
+    
+    sanitize_p(safe_igamc("serial_p2", 2f64.powi(m_i - 2) / 2.0, del2 / 2.0))    
+}
+
+// ----------------------------------------------------------------
+// NIST DFT Spectral Test
+// ----------------------------------------------------------------
+pub fn nist_dft_spectral_test(stream: &mut BitByteStream) -> f64 {
+    let bits = &stream.bits;
+    let n = bits.len();
+
+    let buffer = stream.fft_bits.as_ref().unwrap();
+    let half = n / 2;
+    let upper_bound = (2.995732274 * (n as f64)).sqrt();
+    let n_l: f64 = buffer[..half]
+        .iter()
+        .filter(|c| c.norm() < upper_bound)
+        .count() as f64;
+
+    let n_o = 0.95 * (half as f64);
+    let variance = (n as f64) * 0.95 * 0.05 / 4.0;
+    let d = (n_l - n_o) / variance.sqrt();
+    
+    sanitize_p(safe_erfc("DFT", d.abs() / 2.0f64.sqrt()))
+}
+
+// ----------------------------------------------------------------
+// NIST Non-Overlapping Template 9 Test
+// ----------------------------------------------------------------
+pub fn nist_non_overlapping_template_9_test(stream: &mut BitByteStream) -> f64 {
+    let bits = &stream.bits;
+    let n = bits.len();    
+    let m = 9;
+    let n_blocks = 8usize;
+    let block_size = n / n_blocks;
+    let lambda = (block_size as f64 - m as f64 + 1.0) / 2f64.powi(m as i32);
+    let var_wj = block_size as f64 * (1.0 / 2f64.powi(m as i32) - (2.0 * m as f64 - 1.0) / 2f64.powi(2 * m as i32));
+
+    if lambda <= 0.0 { return 0.0; }
+
+    let mut last_p_value = 0.0_f64;
+    let mut wj = vec![0usize; n_blocks];
+
+    for sequence in TEMPLATE_9.iter() {
+        for i_idx in 0..n_blocks {
+            let mut w_obs = 0usize;
+            let block_start = i_idx * block_size;
+            let mut j = 0usize;
+            
+            while j + m <= block_size {
+                let mut match_flag = true;
+                for k_idx in 0..m {
+                    if sequence[k_idx] != bits[block_start + j + k_idx] {
+                        match_flag = false;
+                        break;
+                    }
+                }
+                if match_flag { w_obs += 1; j += m; } else { j += 1; }
+            }
+            wj[i_idx] = w_obs;
+        }
+
+        let mut chi_sq = 0.0;
+        let sqrt_var = var_wj.sqrt();
+        for i_idx in 0..n_blocks {
+            let diff = (wj[i_idx] as f64 - lambda) / sqrt_var;
+            chi_sq += diff * diff;
+        }
+        last_p_value = safe_igamc("non_overlapping_9", (n_blocks as f64) / 2.0, chi_sq / 2.0);
+    }
+
+    sanitize_p(last_p_value)
+}
+
+// ----------------------------------------------------------------
+// NIST Non-Overlapping Template 10 Test
+// ----------------------------------------------------------------
+pub fn nist_non_overlapping_template_10_test(stream: &mut BitByteStream) -> f64 {
+    let bits = &stream.bits;
+    let n = bits.len();    
+    let m = 10;
+    let n_blocks = 8usize;
+    let block_size = n / n_blocks;
+    let lambda = (block_size as f64 - m as f64 + 1.0) / 2f64.powi(m as i32);
+    let var_wj = block_size as f64 * (1.0 / 2f64.powi(m as i32) - (2.0 * m as f64 - 1.0) / 2f64.powi(2 * m as i32));
+
+    if lambda <= 0.0 { return 0.0; }
+
+    let mut last_p_value = 0.0_f64;
+    let mut wj = vec![0usize; n_blocks];
+
+    for sequence in TEMPLATE_10.iter() {
+        for i_idx in 0..n_blocks {
+            let mut w_obs = 0usize;
+            let block_start = i_idx * block_size;
+            let mut j = 0usize;
+            
+            while j + m <= block_size {
+                let mut match_flag = true;
+                for k_idx in 0..m {
+                    if sequence[k_idx] != bits[block_start + j + k_idx] {
+                        match_flag = false;
+                        break;
+                    }
+                }
+                if match_flag { w_obs += 1; j += m; } else { j += 1; }
+            }
+            wj[i_idx] = w_obs;
+        }
+
+        let mut chi_sq = 0.0;
+        let sqrt_var = var_wj.sqrt();
+        for i_idx in 0..n_blocks {
+            let diff = (wj[i_idx] as f64 - lambda) / sqrt_var;
+            chi_sq += diff * diff;
+        }
+        last_p_value = safe_igamc("non_overlapping_10", (n_blocks as f64) / 2.0, chi_sq / 2.0);
+    }
+
+    sanitize_p(last_p_value)
+}
+
+// ----------------------------------------------------------------
+// NIST Overlapping Template Test
+// ----------------------------------------------------------------
+pub fn nist_overlapping_template_test(stream: &mut BitByteStream) -> f64 {
+    let bits = &stream.bits;
+    let n = bits.len();
+    let m = 9usize;
+    let big_m = 1032usize;
+    let big_n = n / big_m;
+
+    if big_n == 0 {
+        return 0.0;
+    }
+
+    let sequence = vec![1u8; m];
+    let lambda = (big_m - m + 1) as f64 / 2.0_f64.powi(m as i32);
+    let eta = lambda / 2.0;
+    let k_usize = 5usize;
+
+    let mut nu = [0u32; 6];
+    let mut pi = [0.0f64; 6];
+    let mut sum_pi = 0.0;
+
+    for i in 0..k_usize {
+        pi[i] = pr_overlapping(i as i32, eta);
+        sum_pi += pi[i];
+    }
+    pi[k_usize] = 1.0 - sum_pi;
+
+    for i in 0..big_n {
+        let mut w_obs = 0.0f64;
+        for j in 0..=(big_m - m) {
+            let mut match_flag = 1;
+            for k in 0..m {
+                if sequence[k] != bits[i * big_m + j + k] {
+                    match_flag = 0;
+                    break;
+                }
+            }
+            if match_flag == 1 {
+                w_obs += 1.0;
+            }
+        }
+        if w_obs <= 4.0 {
+            nu[w_obs as usize] += 1;
+        } else {
+            nu[k_usize] += 1;
+        }
+    }
+
+    let mut chi2 = 0.0f64;
+    let n_f = big_n as f64;
+    for i in 0..=k_usize {
+        let expected = n_f * pi[i];
+        if expected > 0.0 {
+            let diff = nu[i] as f64 - expected;
+            chi2 += diff * diff / expected;
+        }
+    }
+
+    sanitize_p(safe_igamc("overlapping_template", (k_usize as f64) / 2.0, chi2 / 2.0))
+}
+
+// ----------------------------------------------------------------
+// NIST Universal Maurer Test
+// ----------------------------------------------------------------
+pub fn nist_universal_maurer_test(stream: &mut BitByteStream) -> f64 {
+    let bits = &stream.bits;
+    let n = bits.len();
+
+    let mut l = 5;
+    if n >= 387_840 { l = 6; }
+    if n >= 904_960 { l = 7; }
+    if n >= 2_068_480 { l = 8; }
+    if n >= 4_654_080 { l = 9; }
+    if n >= 10_342_400 { l = 10; }
+    if n >= 22_753_280 { l = 11; }
+    if n >= 49_643_520 { l = 12; }
+    if n >= 107_560_960 { l = 13; }
+    if n >= 231_669_760 { l = 14; }
+    if n >= 496_435_200 { l = 15; }
+    if n >= 1_059_061_760 { l = 16; }
+
+    let q = 10 * (1usize << l);
+    let n_over_l = n / l;
+    if n_over_l <= q {
+        return 0.0;
+    }
+    let k = n_over_l - q;
+
+    let expected_table: [f64; 17] = [
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 5.2177052, 6.1962507, 7.1836656, 8.1764248, 
+        9.1723243, 10.170032, 11.168765, 12.168070, 13.167693, 14.167488, 15.167379,
+    ];
+    let variance_table: [f64; 17] = [
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 2.954, 3.125, 3.238, 3.311, 3.356, 3.384, 
+        3.401, 3.410, 3.416, 3.419, 3.421,
+    ];
+
+    let p = 1usize << l;
+    let mut t = vec![0usize; p];
+    let k_f = k as f64;
+    let l_f = l as f64;
+    let c = 0.7 - 0.8 / l_f + (4.0 + 32.0 / l_f) * k_f.powf(-3.0 / l_f) / 15.0;
+    let sigma = c * (variance_table[l] / k_f).sqrt();
+    let sqrt2 = 2.0_f64.sqrt();
+
+    for i in 1..=q {
+        let mut dec = 0usize;
+        let base = (i - 1) * l;
+        for j in 0..l { dec = (dec << 1) | (bits[base + j] as usize); }
+        t[dec] = i;
+    }
+
+    let mut sum = 0.0;
+    for i in (q + 1)..=(q + k) {
+        let mut dec = 0usize;
+        let base = (i - 1) * l;
+        for j in 0..l { dec = (dec << 1) | (bits[base + j] as usize); }
+        sum += ((i - t[dec]) as f64).ln() / 2.0_f64.ln();
+        t[dec] = i;
+    }
+
+    let phi = sum / k_f;
+    let arg = (phi - expected_table[l]).abs() / (sqrt2 * sigma);
+
+    sanitize_p(safe_erfc("Maurer", arg))
+}
+
+// ----------------------------------------------------------------
+// NIST Linear Complexity Test
+// ----------------------------------------------------------------
+pub fn nist_linear_complexity_test(stream: &mut BitByteStream) -> f64 {
+    let bits = &stream.bits;
+    let n = bits.len();
+
+    // Default block size M = 500 as per NIST recommendation
+    let m = calculate_best_m(n);
+    let k = 6;
+    let n_blocks = n / m;
+    let pi = [0.01047, 0.03125, 0.12500, 0.50000, 0.25000, 0.06250, 0.020833];
+    let mut nu = vec![0f64; k + 1];
+
+    for block in 0..n_blocks {
+        let start = block * m;
+        let mut c = vec![0u8; m];
+        let mut b = vec![0u8; m];
+        let mut tmp = vec![0u8; m];
+        let mut pp = vec![0u8; m];
+        
+        c[0] = 1; 
+        b[0] = 1;
+        let mut l = 0usize;
+        let mut m_idx: isize = -1;
+        let mut n_idx = 0usize;
+
+        // Berlekamp-Massey Algorithm
+        while n_idx < m {
+            let mut d = bits[start + n_idx];
+            for i in 1..=l {
+                d ^= c[i] & bits[start + n_idx - i];
+            }
+            if d == 1 {
+                tmp.clone_from_slice(&c);
+                pp.fill(0);
+                let shift = (n_idx as isize - m_idx) as usize;
+                if shift < m {
+                    for j in 0..(m - shift) {
+                        if b[j] == 1 { pp[j + shift] = 1; }
+                    }
+                }
+                for i in 0..m { c[i] ^= pp[i]; }
+                if l <= n_idx / 2 {
+                    l = n_idx + 1 - l;
+                    m_idx = n_idx as isize;
+                    b.clone_from_slice(&tmp);
+                }
+            }
+            n_idx += 1;
+        }
+
+        let parity1 = (m + 1) % 2;
+        let sign1 = if parity1 == 0 { -1.0 } else { 1.0 };
+        let mean = m as f64 / 2.0
+            + (9.0 + sign1) / 36.0
+            - (1.0 / 2f64.powi(m as i32)) * (m as f64 / 3.0 + 2.0 / 9.0);
+
+        let parity2 = m % 2;
+        let sign2 = if parity2 == 0 { 1.0 } else { -1.0 };
+        let t_val = sign2 * ((l as f64) - mean) + 2.0 / 9.0;
+
+        let idx = if t_val <= -2.5 { 0 } 
+                  else if t_val <= -1.5 { 1 } 
+                  else if t_val <= -0.5 { 2 }
+                  else if t_val <= 0.5 { 3 } 
+                  else if t_val <= 1.5 { 4 } 
+                  else if t_val <= 2.5 { 5 } 
+                  else { 6 };
+        nu[idx] += 1.0;
+    }
+
+    let mut chi_sq = 0.0;
+    for i in 0..=k {
+        let expected = (n_blocks as f64) * pi[i];
+        chi_sq += (nu[i] - expected).powi(2) / expected;
+    }
+
+    sanitize_p(safe_igamc("linear_complexity", (k as f64) / 2.0, chi_sq / 2.0))
+}
+
+// ================================================================
+//  Gap Test (Byte-based)
+// ================================================================
+pub fn gap_test(stream: &mut BitByteStream) -> f64 {
+    let mut last_seen = [-1isize; 256];
+    const MAX_GAP: usize = 255;
+    let mut gaps = [0usize; MAX_GAP + 1];
+
+    for (i, &b) in stream.bytes.iter().enumerate() {
+        let idx = b as usize;
+        let last = last_seen[idx];
+
+        if last >= 0 {
+            let gap = i - (last as usize) - 1;
+            // Any gap >= 256 is funneled into the overflow bin
+            let g = if gap > MAX_GAP { MAX_GAP } else { gap };
+            gaps[g] += 1;
+        }
+        last_seen[idx] = i as isize;
+    }
+
+    let total_gaps: usize = gaps.iter().sum();
+    if total_gaps == 0 { return 0.0; }
+
+    let total_gaps_f = total_gaps as f64;
+    let mut expected = [0.0f64; MAX_GAP + 1];
+    
+    // Geometric distribution: P(gap = k) = p * (1-p)^k
+    let p_hit = 1.0 / 256.0;
+    let q_miss: f64 = 255.0 / 256.0;
+
+    for k in 0..MAX_GAP {
+        expected[k] = q_miss.powi(k as i32) * p_hit * total_gaps_f;
+    }
+ 
+    expected[MAX_GAP] = q_miss.powi(MAX_GAP as i32) * total_gaps_f;
+
+    let mut chi_sq = 0.0;
+    for k in 0..=MAX_GAP {
+        let e = expected[k];
+        let o = gaps[k] as f64;
+        if e > 0.0 {
+            let diff = o - e;
+            chi_sq += (diff * diff) / e;
+        }
+    }
+    
+	sanitize_p(1.0 - chi_square_cdf(chi_sq, MAX_GAP as f64))
+}
+
+// ================================================================
+//  Nibble Markov Transition Test
+// ================================================================
+pub fn nibble_markov_test(stream: &mut BitByteStream) -> f64 {
+    //let n = stream.byte_len;
+    let data = &stream.bytes;
+
+    // 16 x 16 transition counts
+    let mut trans = [[0u64; 16]; 16];
+    let mut row_sum = [0u64; 16];
+    let mut col_sum = [0u64; 16];
+
+    for w in data.windows(2) {
+        let a = (w[0] >> 4) as usize; // high nibble
+        let b = (w[1] >> 4) as usize;
+        trans[a][b] += 1;
+        row_sum[a] += 1;
+        col_sum[b] += 1;
+    }
+
+    let total: f64 = row_sum.iter().map(|&x| x as f64).sum();
+    if total == 0.0 {
+        return 0.5;
+    }
+
+    // Chi-square for independence: expected = row_sum[a] * col_sum[b] / total
+    let mut chi2 = 0.0;
+    for a in 0..16 {
+        for b in 0..16 {
+            let o = trans[a][b] as f64;
+            if o == 0.0 {
+                continue;
+            }
+            let e = (row_sum[a] as f64) * (col_sum[b] as f64) / total;
+            if e > 0.0 {
+                let diff = o - e;
+                chi2 += diff * diff / e;
+            }
+        }
+    }
+
+    // Degrees of freedom for 16x16 independence: (16-1)*(16-1) = 225
+    let df = 225.0;
+
+    // Assuming you already have chi_square_cdf or safe_igamc-based wrapper
+    sanitize_p(1.0 - chi_square_cdf(chi2, df))
+}
+
+// ================================================================
+//  NIST Cumulative Sums Test on a Single Stream
+//  Returns: p-value (f64)
+// ================================================================
+fn cusum_core(z: i64, n: usize) -> f64 {
+    if z <= 0 { return 0.0; }
+
+    let n_i = n as i64;
+    let n_f = n as f64;
+    let sqrt_n = n_f.sqrt();
+    let zf = z as f64;
+
+    let phi = |x: f64| 0.5 * (1.0 + safe_erf("cumulative_sum_phi", x / std::f64::consts::SQRT_2));
+
+    let mut sum1 = 0.0;
+    let lower1 = (-n_i / z + 1) / 4;
+    let upper1 = (n_i / z - 1) / 4;
+    for k in lower1..=upper1 {
+        let kf = k as f64;
+        sum1 += phi(((4.0 * kf + 1.0) * zf) / sqrt_n);
+        sum1 -= phi(((4.0 * kf - 1.0) * zf) / sqrt_n);
+    }
+
+    let mut sum2 = 0.0;
+    let lower2 = (-n_i / z - 3) / 4;
+    let upper2 = (n_i / z - 1) / 4;
+    for k in lower2..=upper2 {
+        let kf = k as f64;
+        sum2 += phi(((4.0 * kf + 3.0) * zf) / sqrt_n);
+        sum2 -= phi(((4.0 * kf + 1.0) * zf) / sqrt_n);
+    }
+
+    sanitize_p(1.0 - sum1 + sum2)	
+}
+
+pub fn cusum_forward_test(stream: &mut BitByteStream) -> f64 {
+    let n = stream.bit_len;
+    let z = stream.cusum_sup.max(-stream.cusum_inf);
+    cusum_core(z, n)
+}
+
+pub fn cusum_reverse_test(stream: &mut BitByteStream) -> f64 {
+    let n = stream.bit_len;
+    let zrev = (stream.cusum_sup - stream.cusum_s).max(stream.cusum_s - stream.cusum_inf);
+    cusum_core(zrev, n)
+}
+
+// ================================================================
+//  Empirical byte entropy
+// ================================================================
+fn byte_entropy(data: &[u8]) -> f64 {
+    let n = data.len();
+    if n == 0 {
+        return 0.0;
+    }
+
+    let mut counts = [0usize; 256];
+    for &b in data {
+        counts[b as usize] += 1;
+    }
+
+    let n_f = n as f64;
+    let mut h = 0.0;
+
+    for &c in counts.iter() {
+        if c == 0 {
+            continue;
+        }
+        let p = c as f64 / n_f;
+        h -= p * p.log2();
+    }
+
+    h
+}
+
+pub fn entropy_global_test(stream: &mut BitByteStream) -> f64 {
+    let n = stream.byte_len;
+    let bytes = &stream.bytes;
+
+    // Compute entropy at multiple scales
+    let scales = [n / 8, n / 4, n / 2, n];
+    let mut rates = Vec::new();
+
+    for &len in &scales {
+        if len >= 256 {
+            rates.push(byte_entropy(&bytes[..len]));
+        }
+    }
+
+    // If nothing valid, return 0
+    if rates.is_empty() {
+        return 0.0;
+    }
+
+    // Return the full-sample entropy (8-bit scale)
+    *rates.last().unwrap()
+}
+
+// ================================================================
+//  Votonoi Cell Volume Test
+// ================================================================
+pub fn voronoi_cell_volume_test_fast(stream: &mut BitByteStream) -> f64 {
+    // hardcoded, other values create janky p-values
+	// these center around 0.5 across csprng data
+	const N_POINTS: usize = 128;
+    const N_PROBES: usize = 4096;
+
+    let bytes = &stream.bytes;
+    let needed_points = N_POINTS * 8;
+    let needed_probes = N_PROBES * 8;
+
+    if bytes.len() < needed_points + needed_probes {
+        return 0.0;
+    }
+
+    // -----------------------------
+    // Load generator points
+    // -----------------------------
+    let mut idx = 0usize;
+    let mut gens: Vec<(f64, f64)> = Vec::with_capacity(N_POINTS);
+
+    for _ in 0..N_POINTS {
+        let x_raw = u32::from_be_bytes(bytes[idx..idx+4].try_into().unwrap());
+        let y_raw = u32::from_be_bytes(bytes[idx+4..idx+8].try_into().unwrap());
+        idx += 8;
+
+        gens.push((
+            x_raw as f64 / (u32::MAX as f64),
+            y_raw as f64 / (u32::MAX as f64),
+        ));
+    }
+
+    // -----------------------------
+    // Monte‑Carlo Voronoi probing
+    // -----------------------------
+    let mut counts = vec![0usize; N_POINTS];
+
+    for _ in 0..N_PROBES {
+        let x_raw = u32::from_be_bytes(bytes[idx..idx+4].try_into().unwrap());
+        let y_raw = u32::from_be_bytes(bytes[idx+4..idx+8].try_into().unwrap());
+        idx += 8;
+
+        let x = x_raw as f64 / (u32::MAX as f64);
+        let y = y_raw as f64 / (u32::MAX as f64);
+
+        let mut best = f64::INFINITY;
+        let mut best_idx = 0usize;
+
+        for (i, &(gx, gy)) in gens.iter().enumerate() {
+            let dx = x - gx;
+            let dy = y - gy;
+            let d2 = dx*dx + dy*dy;
+
+            if d2 < best {
+                best = d2;
+                best_idx = i;
+            }
+        }
+
+        counts[best_idx] += 1;
+    }
+
+    // -----------------------------
+    // Compute CV of cell areas
+    // -----------------------------
+    let areas: Vec<f64> = counts
+        .iter()
+        .map(|&c| c as f64 / (N_PROBES as f64))
+        .collect();
+
+    let mean_area = 1.0 / (N_POINTS as f64);
+
+    let mut var = 0.0;
+    for &a in &areas {
+        let d = a - mean_area;
+        var += d * d;
+    }
+    var /= N_POINTS as f64;
+
+    let std_area = var.sqrt();
+    let cv = std_area / mean_area;
+
+    // Expected CV for Poisson‑Voronoi in 2D
+    let expected_cv = 0.53;
+    let z = (cv - expected_cv) / 0.10;
+
+    sanitize_p(2.0 * (1.0 - normal_cdf(z.abs())))
+}
+
+// ================================================================
+//  NCD test
+// ================================================================
+
+
+/*
+Mean (average) = 0.486619349164
+n = 1200
+sum = 583.943218996261
+min = 0.00028251966
+max = 0.999309736387
+*/
+pub fn NCD_test(stream: &mut BitByteStream) -> f64 {
+	let bytes = &stream.bytes;
+	let segment_size: usize = 8;
+	
+    if bytes.len() < segment_size * 2 {
+        return 0.5;
+    }
+    
+    let min_pairs: usize = 30;	
+	let expected_mean: f64 = 0.861712;
+	let expected_std: f64 = 0.053276;
+    
+    let segments: Vec<&[u8]> = bytes.chunks(segment_size).collect();
+        
+    let mut ncd_values = Vec::with_capacity(segments.len() - 1);
+        
+    for i in 0..(segments.len() - 1) {
+        let a = segments[i];
+        let b = segments[i + 1];
+            
+        let c_a = lz76_complexity(a);
+        let c_b = lz76_complexity(b);
+            
+        if c_a <= 0.0 || c_b <= 0.0 {
+            continue;
+        }
+            
+        let mut ab = Vec::with_capacity(a.len() + b.len());
+        ab.extend_from_slice(a);
+        ab.extend_from_slice(b);
+        let c_ab = lz76_complexity(&ab);
+            
+        let c_min = c_a.min(c_b);
+        let c_max = c_a.max(c_b);
+        let ncd = (c_ab - c_min) / c_max;
+            
+        if ncd >= 0.0 && ncd <= 1.0 {
+            ncd_values.push(ncd);
+        }
+    }
+        
+    let n = ncd_values.len();
+    if n < min_pairs {
+        return 0.5;
+    }
+        
+    let mean_ncd = ncd_values.iter().sum::<f64>() / n as f64;
+        
+    let standard_error = expected_std / (n as f64).sqrt();
+    let z = (mean_ncd - expected_mean) / standard_error;
+        
+    let normal = Normal::new(0.0, 1.0).unwrap();
+    let p: f64 = 2.0 * (1.0 - normal.cdf(z.abs()));
+        
+    p.clamp(0.0, 1.0)
+}
+
+/// LZ76 complexity implementation
+fn lz76_complexity(data: &[u8]) -> f64 {
+    if data.is_empty() {
+        return 0.0;
+    }
+    
+    let n = data.len();
+    let mut complexity = 1.0;
+    let mut i = 0;
+    
+    while i < n {
+        let mut max_len = 0;
+        
+        for j in 0..i {
+            let mut len = 0;
+            while i + len < n && j + len < i && data[j + len] == data[i + len] {
+                len += 1;
+            }
+            if len > max_len {
+                max_len = len;
+            }
+        }
+        
+        if max_len > 0 {
+            i += max_len;
+        } else {
+            complexity += 1.0;
+            i += 1;
+        }
+    }
+    
+    complexity
+}
+
+// ================================================================
+//  Maurer's Universal Statistical Test (Byte-based)
+// ================================================================
+
+/*
+Mean (average) = 0.522032402669
+n = 1200
+sum = 626.438883203222
+min = 0.000254072669
+max = 0.996951062222
+*/
+
+pub fn maurer_universal_byte_test(stream: &mut BitByteStream) -> f64 {
+    let n = stream.byte_len;
+    let q = 2560;
+    let mut last_seen = [0usize; 256];
+
+    for i in 0..q {
+        last_seen[stream.bytes[i] as usize] = i;
+    }
+
+    let mut sum_logs = 0.0;
+    let mut count = 0usize;
+
+    for i in q..n {
+        let sym = stream.bytes[i] as usize;
+        let last = last_seen[sym];
+
+        if last > 0 {
+            let dist = i - last;
+            sum_logs += (dist as f64).log2();
+            count += 1;
+        }
+
+        last_seen[sym] = i;
+    }
+
+    if count == 0 {
+        return 0.0;
+    }
+
+    let fn_val = sum_logs / (count as f64);    
+    let expected = 7.1836656;
+    let expected_variance = 3.238;
+
+    let c = 0.7 - 0.8/8.0 + (4.0 + 32.0/8.0) * (count as f64).powf(-3.0/8.0);
+    let sigma = c * (expected_variance / (count as f64)).sqrt();
+    let z = (fn_val - expected) / sigma;
+
+    sanitize_p(erfc(z.abs() / 2.0f64.sqrt()))
+}
+
+// ================================================================
+// Entropy Surface Curvature & Min-Entropy Validation
+// ================================================================
+
+/*
+let block_sizes = [256, 384, 512, 768, 1024];
+=== STREAM HEALTH GAUGE (AGGREGATED) ===
+Total Streams Evaluated: 30000
+PERFECT (0 Fails): 28817 streams ( 96.06%)
+SLIGHT  (1 Fail ):   911 streams (  3.04%)
+WARNING (2 Fails):   191 streams (  0.64%)
+SICK    (3 Fails):    63 streams (  0.21%)
+CRITICAL(4 Fails):    16 streams (  0.05%)
+COLLAPSE(5 Fails):     2 streams (  0.01%)
+
+TODO: hook up the health check report for each stream
+
+    let mut gauge = HealthGauge::new();
+
+    for _ in 0..1000 {
+        
+    	let mut p_values = Vec::new();
+        let block_sizes = [256, 384, 512, 768, 1024];
+
+        for &bs in &block_sizes {
+           let p = entropy_surface_curvature_test(&mut stream, bs);
+           p_values.push(p);
+        }
+
+        gauge.record_stream(&p_values);
+    }
+
+    // See the final calibration
+    gauge.print_gauge();
+*/
+
+fn entropy_surface_curvature_pvalue(stream: &mut BitByteStream) -> (f64, f64) {
+    let block_sizes = [256, 384, 512, 768, 1024];
+    let mut lowest = 1.0;
+    let mut sum = 0.0;
+    let mut count = 0.0;
+
+    for &bs in &block_sizes {
+        let p = entropy_surface_curvature_test(stream, bs);
+        if p < lowest {
+            lowest = p;
+        }
+
+        sum += p;
+        count += 1.0;
+    }
+
+    let mean = if count > 0.0 { sum / count } else { 0.0 };
+
+    (lowest, mean)
+}
+
+pub fn entropy_surface_curvature_test(stream: &mut BitByteStream, block_size: usize) -> f64 {
+    let bytes = &stream.bytes;
+    let n = bytes.len();
+    if n < block_size * 5 { return 0.0; }
+
+    let expected_h = mean_entropy_from_block_size(block_size);
+   
+    let mut entropies: Vec<f64> = Vec::new();
+    let mut i = 0usize;
+    let mut min_h = f64::INFINITY;
+	let mut max_h = 0.0;
+
+    while i + block_size <= n {
+        let blk = &bytes[i..i + block_size];
+        let mut freq = [0usize; 256];
+        for &b in blk { freq[b as usize] += 1; }
+
+        let total = block_size as f64;
+        let mut h = 0.0;
+        for &count in freq.iter() {
+            if count > 0 {
+                let p = count as f64 / total;
+                h -= p * p.log2();
+            }
+        }
+        if h < min_h { min_h = h; }
+		if h > max_h { max_h = h; }
+        entropies.push(h);
+        i += block_size;
+    }
+
+    let m = entropies.len();
+    if m < 5 { return 0.0; }
+
+    let mut s = [0.0f64; 5]; 
+    let mut t = [0.0f64; 3]; 
+    let mut sum_h2 = 0.0;
+
+    for (idx, &h) in entropies.iter().enumerate() {
+        let x = idx as f64;
+        let x2 = x * x;
+        s[0] += 1.0; s[1] += x; s[2] += x2; s[3] += x2 * x; s[4] += x2 * x2;
+        t[0] += h; t[1] += x * h; t[2] += x2 * h;
+        sum_h2 += h * h;
+    }
+
+    let det = s[0] * (s[2] * s[4] - s[3] * s[3])
+            - s[1] * (s[1] * s[4] - s[2] * s[3])
+            + s[2] * (s[1] * s[3] - s[2] * s[2]);
+
+    if det.abs() < 1e-12 { return 0.0; }
+
+    let c = (s[0] * (s[2] * t[2] - t[1] * s[3])
+           - s[1] * (s[1] * t[2] - t[1] * s[2])
+           + t[0] * (s[1] * s[3] - s[2] * s[2])) / det;
+
+    let mean_h = t[0] / m as f64;
+    // Floor the variance (0.0001) to avoid hyper-sensitivity.
+    let var_h = (sum_h2 / m as f64 - mean_h * mean_h).max(0.0001);
+    let se_c = (var_h * ((s[0] * s[2] - s[1] * s[1]) / det).abs()).sqrt();
+    
+    let z = c / se_c;
+    let p_curve: f64 = 1.0 - erf(z.abs() / 2.0f64.sqrt());
+
+    // The tripwire is set to 95% of the expected entropy for this block size.
+    // This catches the "string fails" you mentioned without flagging the "deficit".
+    let tripwire_threshold = expected_h * 0.90625;
+    let p_min = if min_h < tripwire_threshold {
+        // Linearly penalize until it hits 0.0 at 90% of expected
+        //((min_h - (expected_h * 0.9)) / (expected_h * 0.05)).clamp(0.0)
+		// overriding to auto fail anything that drops below 95%
+		0.0
+    } else {
+        1.0
+    };
+
+    sanitize_p(p_curve.min(p_min))
+}
+
+// ================================================================
+//  Multi-Panel Quadratic Character Balance Wrapper (debug enabled)
+// ================================================================
+pub fn quadratic_character_multi_panel_test(stream: &mut BitByteStream, panels: &[(u64, usize)]) -> (f64, f64) {
+    let mut lowest = 1.0;
+    let mut sum = 0.0;
+    let mut count = 0.0;
+
+    for (_index, &(prime, word_size)) in panels.iter().enumerate() {
+        let p = quadratic_character_balance_test_panel(
+            stream,        
+            prime,
+            word_size,
+        );
+
+        if p < lowest {
+            lowest = p;
+        }
+
+        sum += p;
+        count += 1.0;
+    }
+
+    let mean = if count > 0.0 { sum / count } else { 0.0 };
+
+    (lowest, mean)
+}
+
+// ================================================================
+//  Single-panel test with panel-indexed debug logging
+// ================================================================
+fn quadratic_character_balance_test_panel(
+    stream: &mut BitByteStream,    
+    prime: u64,
+    word_size: usize,
+) -> f64 {
+    let bytes = &stream.bytes;
+    if bytes.is_empty() || word_size == 0 {
+        return 0.0;
+    }
+
+    // -------------------------
+    // Convert bytes → words
+    // -------------------------
+    let mut count_pos = 0usize;
+    let mut count_neg = 0usize;
+    //let mut count_zero = 0usize;
+
+    let mut i = 0usize;
+    while i + word_size <= bytes.len() {
+        let w = match word_size {
+            2 => ((bytes[i] as u64) << 8)
+                |  (bytes[i + 1] as u64),
+            3 => ((bytes[i] as u64) << 16)
+                | ((bytes[i + 1] as u64) << 8)
+                |  (bytes[i + 2] as u64),
+            4 => ((bytes[i] as u64) << 24)
+                | ((bytes[i + 1] as u64) << 16)
+                | ((bytes[i + 2] as u64) << 8)
+                |  (bytes[i + 3] as u64),
+            _ => break,
+        };
+
+        i += word_size;
+
+        let a = (w % prime) as u64;
+        let ls = if a == 0 { 0 } else { legendre_symbol_u64(a, prime) };
+
+        match ls {
+            1 => count_pos += 1,
+            -1 => count_neg += 1,
+            //0 => count_zero += 1,
+            _ => {}
+        }
+    }
+
+    let total_nonzero = count_pos + count_neg;
+    if total_nonzero == 0 { return 0.0; }
+    //println!("pos={count_pos}, neg={count_neg}, zero={count_zero}");
+
+    let expected = total_nonzero as f64 / 2.0;
+    let chi2 =
+        ((count_pos as f64 - expected).powi(2) / expected) +
+        ((count_neg as f64 - expected).powi(2) / expected);
+    
+    sanitize_p(1.0 - chi_square_cdf(chi2, 1.0))
+}
+
+// ================================================================
+//  Legendre symbol (a | p)
+// ================================================================
+fn legendre_symbol_u64(a: u64, p: u64) -> i64 {
+    let e = (p - 1) / 2;
+    let r = modexp_u64(a, e, p);
+    if r == 1 { 1 } else if r == 0 { 0 } else { -1 }
+}
+
+// ================================================================
+//  Modular exponentiation
+// ================================================================
+fn modexp_u64(a: u64, mut e: u64, m: u64) -> u64 {
+    let mut r: u64 = 1;
+    let mut base: u64 = (a % m) as u64;
+    let modulus: u64 = m as u64;
+
+    while e > 0 {
+        if e & 1 == 1 {
+            r = (r * base) % modulus;
+        }
+        base = (base * base) % modulus;
+        e >>= 1;
+    }
+
+    r as u64
+}
+
+// ----------------------------------------------------------------
+// NIST Random Excursion Test Validation
+// ----------------------------------------------------------------
+fn validate_excursion_eligibility(bits: &[u8], is_variant: bool)
+    -> (bool, usize, Vec<i32>)
+{
+    let n = bits.len();
+    if n == 0 {
+        return (false, 0, Vec::new());
+    }
+
+    // Build cumulative sum walk s_k
+    let mut s_k = Vec::with_capacity(n);
+    let mut current_sum = 2 * (bits[0] as i32) - 1;
+    s_k.push(current_sum);
+
+    let mut j = 0usize;
+
+    for i in 1..n {
+        current_sum += 2 * (bits[i] as i32) - 1;
+        s_k.push(current_sum);
+
+        if current_sum == 0 {
+            j += 1;
+        }
+    }
+
+    // Variant includes final partial cycle
+    let constraint = if is_variant {
+        if current_sum != 0 {
+            j += 1;
+        }
+        (0.005 * (n as f64).sqrt()).max(500.0) as usize
+    } else {
+        500usize
+    };
+
+    let is_valid = j >= constraint;
+
+    (is_valid, j, s_k)
+}
+
+// ----------------------------------------------------------------
+// NIST Random Excursion Test
+// ----------------------------------------------------------------
+pub fn nist_random_excursions_test(stream: &mut BitByteStream) -> Vec<Option<f64>> {
+    let bits = &stream.bits;
+    let (is_valid, j, s_k) = validate_excursion_eligibility(bits, false);
+
+    if !is_valid {
+        return vec![None; 8];
+    }
+
+    let j_f = j as f64;
+    let mut results = Vec::with_capacity(8);
+
+    let state_x: [i32; 8] = [-4, -3, -2, -1, 1, 2, 3, 4];
+
+    let pi: [[f64; 6]; 5] = [
+        [0.0; 6],
+        [0.5, 0.25, 0.125, 0.0625, 0.03125, 0.03125],
+        [0.75, 0.0625, 0.046875, 0.03515625, 0.0263671875, 0.0791015625],
+        [0.8333333333, 0.02777777778, 0.02314814815, 0.01929012346, 0.01607510288, 0.0803755143],
+        [0.875, 0.015625, 0.013671875, 0.01196289063, 0.0104675293, 0.0732727051],
+    ];
+
+    let mut nu = [[0f64; 8]; 6];
+    let mut counter = [0usize; 8];
+
+    for &val in &s_k {
+        if (1..=4).contains(&val) || (-4..=-1).contains(&val) {
+            let b = if val < 0 { 4 } else { 3 };
+            let idx = (val + b) as usize;
+            counter[idx] += 1;
+        }
+
+        if val == 0 {
+            for k in 0..8 {
+                let c = counter[k];
+                if c <= 4 { nu[c][k] += 1.0; } else { nu[5][k] += 1.0; }
+                counter[k] = 0;
+            }
+        }
+    }
+
+    for (i, &x_state) in state_x.iter().enumerate() {
+        let abs_x = x_state.abs() as usize;
+        let mut chi_sq = 0.0;
+
+        for k in 0..6 {
+            let expected = j_f * pi[abs_x][k];
+            if expected > 0.0 {
+                let diff = nu[k][i] - expected;
+                chi_sq += (diff * diff) / expected;
+            }
+        }
+
+        let p_val = safe_igamc("random_excursions", 2.5, chi_sq / 2.0);
+        results.push(Some(p_val.clamp(0.0, 1.0)));
+    }
+
+    results
+}
+
+// ----------------------------------------------------------------
+// NIST Random Excursion Variant Test
+// ----------------------------------------------------------------
+pub fn nist_random_excursions_variant_test(stream: &mut BitByteStream) -> Vec<Option<f64>> {
+    let bits = &stream.bits;
+    let (is_valid, j, s_k) = validate_excursion_eligibility(bits, true);
+
+    if !is_valid {
+        return vec![None; 18];
+    }
+
+    let j_f = j as f64;
+    let mut results = Vec::with_capacity(18);
+
+    let state_x: [i32; 18] =
+        [-9, -8, -7, -6, -5, -4, -3, -2, -1,
+          1,  2,  3,  4,  5,  6,  7,  8,  9];
+
+    for &x_state in &state_x {
+        let count = s_k.iter().filter(|&&v| v == x_state).count();
+        let numerator = ((count as f64) - j_f).abs();
+        let denom = (2.0 * j_f * (4.0 * (x_state.abs() as f64) - 2.0)).sqrt();
+
+        let p_value = safe_erfc("RE Variant", numerator / denom);
+        results.push(Some(p_value.clamp(0.0, 1.0)));
+    }
+
+    results
+}
+
+// ----------------------------------------------------------------
+// Excursion Panel Aggregator
+// ----------------------------------------------------------------
+pub struct ExcursionResult {
+    pub min_p: f64,
+    pub mean_p: f64,
+    pub valid_states: usize,
+}
+
+pub fn aggregate_excursion_panel(raw: Vec<Option<f64>>) -> ExcursionResult {
+    let mut vals = Vec::new();
+
+    for p in raw {
+        if let Some(v) = p {
+            vals.push(v);
+        }
+    }
+
+    let valid_states = vals.len();
+
+    if valid_states == 0 {
+        return ExcursionResult {
+            min_p: 1.0,
+            mean_p: 1.0,
+            valid_states: 0,
+        };
+    }
+
+    let min_p = vals.iter().cloned().fold(1.0, f64::min);
+    let mean_p = vals.iter().sum::<f64>() / (valid_states as f64);
+
+    ExcursionResult {
+        min_p,
+        mean_p,
+        valid_states,
+    }
+}
+
+//// --------------------------------------------------------
+//// --------------------------------------------------------
+////  END OF TESTS - Start of model, training code...
+//// --------------------------------------------------------
+//// --------------------------------------------------------
+
+const MAX_SYNAPSES: usize = 30;
+const MAX_DELAY: u8 = 60; // Fits within a u64 (0..63)
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[repr(u8)]
+enum GateType { XOR, NAND, OR, AND, NOR }
+
+#[derive(Serialize, Deserialize)]
+pub struct IonMetadata {
+    pub version: u32,
+    pub node_count: u32,
+    pub output_count: u32,
+    pub max_synapses: u32,
+    pub max_delay: u32,
+}
+
+#[derive(Clone, Copy, Serialize, Deserialize)]
+pub struct Node {
+    pub state: u8,
+    pub gate_type: GateType,
+    // We separate these for faster iteration and cache locality
+    pub source_indices: [u16; MAX_SYNAPSES],
+    pub delays: [u8; MAX_SYNAPSES],
+    // This holds the "in-flight" signals. Bit N set means a pulse hits in N ticks.
+    pub delay_masks: [u64; MAX_SYNAPSES],
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct HealthAudit {
+    pub flip_counts: Vec<u64>,
+    pub total_ticks: u64,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct RuntimeIon {
+    pub meta: IonMetadata,
+    pub nodes: Vec<Node>,
+    pub outputs: Vec<usize>,
+    pub audit: HealthAudit,
+    pub gate_outs: Vec<u8>,
+}
+
+impl RuntimeIon {
+    // ---------- helpers ----------
+    #[inline]
+    fn random_gate_type(rng: &mut impl rand::Rng, full_gate_set: bool) -> GateType {
+        if full_gate_set {
+            // Upper part: XOR 50%, NOR 25%, OR 10%, AND 5%, NAND 10%
+            let val = rng.gen_range(0..100);
+            if val < 50 {
+                GateType::XOR
+            } else if val < 75 {
+                GateType::NOR
+            } else if val < 85 {
+                GateType::OR
+            } else if val < 90 {
+                GateType::AND
+            } else {
+                GateType::NAND
+            }
+        } else {
+            // Bottom part: 50% XOR, 30% NOR, 20% NAND
+            let val = rng.gen_range(0..100);
+			if val < 50 {
+                GateType::XOR
+            } else if val < 80 {
+                GateType::NOR
+            } else {
+				GateType::NAND
+			}
+        }
+    }
+
+    #[inline]
+    fn generate_hybrid_delay(rng: &mut impl rand::Rng) -> u8 {
+        const PRIMES: [u8; 18] = [1, 2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59];
+
+        if rng.gen_bool(0.75) { PRIMES[rng.gen_range(0..PRIMES.len())] }
+		else                  { rng.gen_range(1..=60) }
+    }
+
+    #[inline]
+    fn init_node_connections(
+        rng: &mut impl rand::Rng,
+        node_count: usize,
+    ) -> ([u16; MAX_SYNAPSES], [u8; MAX_SYNAPSES]) {
+        let mut indices = [0u16; MAX_SYNAPSES];
+        let mut delays = [0u8; MAX_SYNAPSES];
+        for j in 0..MAX_SYNAPSES {
+            indices[j] = rng.gen_range(0..node_count as u16);
+            delays[j] = Self::generate_hybrid_delay(rng);
+        }
+        (indices, delays)
+    }
+
+    // Replaces init_dendrites_to_hot
+    #[inline]
+    fn init_node_to_hot(
+        rng: &mut impl rand::Rng,
+        hot: &[usize],
+    ) -> ([u16; MAX_SYNAPSES], [u8; MAX_SYNAPSES]) {
+        let mut indices = [0u16; MAX_SYNAPSES];
+        let mut delays = [0u8; MAX_SYNAPSES];
+        for j in 0..MAX_SYNAPSES {
+            let target = hot[rng.gen_range(0..hot.len())];
+            indices[j] = target as u16;
+            delays[j] = Self::generate_hybrid_delay(rng);
+        }
+        (indices, delays)
+    }
+
+    // These remain functionally similar but are more efficient 
+    // if you use .iter().position() or similar, but the logic stays:
+    #[inline]
+    fn hot_indices(&self) -> Vec<usize> {
+        self.audit.flip_counts.iter()
+            .enumerate()
+            .filter(|&(_, &c)| c > 0)
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    #[inline]
+    fn dead_indices(&self) -> Vec<usize> {
+        self.audit.flip_counts.iter()
+            .enumerate()
+            .filter(|&(_, &c)| c == 0)
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    // todo: snapshot states should be a pre-allocated buffer
+    #[inline]
+    fn snapshot_states(&self) -> Vec<u8> {
+        self.nodes.iter().map(|n| n.state).collect()
+    }
+
+    // ---------- ctor ----------
+    pub fn new(node_count: usize, useSeed: bool, seed: u64) -> Self {
+        let mut rng = rand::thread_rng();
+        let mut nodes = Vec::with_capacity(node_count);
+        for i in 0..node_count {
+            let mut source_indices = [0u16; MAX_SYNAPSES];
+            let mut delays = [0u8; MAX_SYNAPSES];
+            for j in 0..MAX_SYNAPSES {
+                source_indices[j] = rng.gen_range(0..node_count as u16);
+                delays[j] = Self::generate_hybrid_delay(&mut rng);
+            }
+
+            let mut nodeState = 0;
+            if useSeed {				
+				let bit_index = (i % 64) as u64;  // "_" is the loop index
+                nodeState = ((seed >> bit_index) & 1) as u8;
+			} else {
+                nodeState = rng.gen_range(0..2);
+			}
+
+            nodes.push(Node {
+                state: nodeState,
+                gate_type: Self::random_gate_type(&mut rng, true),
+                source_indices,
+                delays,
+                delay_masks: [0u64; MAX_SYNAPSES],
+            });
+        }
+
+        let mut outputs: Vec<usize> = (0..node_count).collect();
+        outputs.shuffle(&mut rng);
+
+        RuntimeIon {
+            meta: IonMetadata {
+                version: 2, // Incremented for new architecture
+                node_count: node_count as u32,
+                output_count: outputs.len() as u32,
+                max_synapses: MAX_SYNAPSES as u32,
+                max_delay: MAX_DELAY as u32,
+            },
+            nodes,
+            outputs,
+            audit: HealthAudit::new(node_count),
+            gate_outs: vec![0u8; node_count],
+        }
+    }
+
+    // ---------- graft ----------
+    pub fn graft_nodes(&mut self, count: usize, full_gate_set: bool) {
+        let mut rng = rand::thread_rng();
+        let old_count = self.nodes.len();
+        let hot = self.hot_indices();
+    
+        if hot.is_empty() {
+            println!("Warning: No hot gates found — lattice may be frozen.");
+            return;
+        }
+
+        for _ in 0..count {
+            let gate_type = Self::random_gate_type(&mut rng, full_gate_set);
+            let (source_indices, delays) = Self::init_node_to_hot(&mut rng, &hot);
+        
+            self.nodes.push(Node {
+                state: rng.gen_range(0..2),
+                gate_type,
+                source_indices,
+                delays,
+                delay_masks: [0u64; MAX_SYNAPSES], // Fresh start, no "echoes"
+            });
+        }
+
+        let new_count = self.nodes.len();
+        for idx in old_count..new_count {
+            self.outputs.push(idx);
+        }
+
+        self.audit.flip_counts.resize(new_count, 0);
+        self.gate_outs.resize(new_count, 0); // Don't forget to resize the struct buffer!
+
+        self.meta.node_count = new_count as u32;
+        self.meta.output_count = self.outputs.len() as u32;
+
+        println!("Grafted {} new nodes ({} → {}).", count, old_count, new_count);
+    }
+
+    // ---------- migrate zombies ----------
+    pub fn migrate_zombies(&mut self, full_gate_set: bool) {
+        let mut rng = rand::thread_rng();
+        let hot = self.hot_indices();
+        if hot.is_empty() { return; }
+
+        let zombies = self.dead_indices();
+        if zombies.is_empty() { return; }
+
+        for &z in zombies.iter() {
+            let (new_indices, new_delays) = Self::init_node_to_hot(&mut rng, &hot);
+            let node = &mut self.nodes[z];
+        
+            node.gate_type = Self::random_gate_type(&mut rng, full_gate_set);
+            node.source_indices = new_indices;
+            node.delays = new_delays;
+            node.delay_masks = [0u64; MAX_SYNAPSES]; // Wipe the temporal memory of the zombie
+        }
+    }
+
+    // ---------- analyze ----------
+    pub fn analyze_zombies(&self) {
+        println!("\n--- Zombie Topology Report ---");
+        let node_count = self.nodes.len();
+        let dead = self.dead_indices();
+    
+        if dead.is_empty() {
+            println!("No zombie nodes detected.");
+            return;
+        }
+
+        println!("Total Zombies: {}", dead.len());
+        for &z_idx in dead.iter().take(10) {
+            let zombie = &self.nodes[z_idx];
+            println!("\nZombie Node [{}] | Gate: {:?}", z_idx, zombie.gate_type);
+        
+            for j in 0..MAX_SYNAPSES {
+                let src = zombie.source_indices[j] as usize;
+                if src >= node_count { continue; }
+            
+                let src_flips = self.audit.flip_counts[src];
+                let status = if src_flips == 0 { "DEAD" } else { "ACTIVE" };
+                println!(
+                    "  synapse[{}]: → Node {} ({}) | flips: {} | delay: {}",
+                    j, src, status, src_flips, zombie.delays[j]
+                );
+            }
+        }
+    }
+
+    // ---------- tick ----------
+    pub fn tick(&mut self, out: &mut [u8]) {
+        let len = self.nodes.len();
+    
+        // 1. Spatial Pass (Gates)
+        for i in 0..len {
+            let node = &self.nodes[i];
+            let a = self.nodes[node.source_indices[0] as usize].state;
+            let b = self.nodes[node.source_indices[1] as usize].state;
+        
+            self.gate_outs[i] = match node.gate_type {
+                GateType::XOR  => a ^ b,
+                GateType::NAND => (a & b) ^ 1,
+                GateType::OR   => a | b,
+                GateType::AND  => a & b,
+                GateType::NOR  => (a | b) ^ 1,
+            };
+        }
+
+        // 2. Temporal Pass (Synapses & Audit)
+        for i in 0..len {
+            let gate_out = self.gate_outs[i] as u64;
+            let node = &mut self.nodes[i];
+            let mut flux = 0u64;
+
+            for j in 0..MAX_SYNAPSES {
+                node.delay_masks[j] |= gate_out << node.delays[j];
+                flux ^= node.delay_masks[j] & 1;
+                node.delay_masks[j] >>= 1;
+            }
+
+            // Apply flip and update HealthAudit live
+            if (flux & 1) == 1 {
+                node.state ^= 1;
+                self.audit.mark_flip(i); // O(1) update
+            }
+        }
+    
+        // Finalize the tick
+        self.audit.add_tick();
+
+        // 3. Output Mapping
+        for (i, &idx) in self.outputs.iter().enumerate() {
+            out[i] = self.nodes[idx].state;
+        }
+    }
+	
+    pub fn tick_no_out(&mut self) {
+        let len = self.nodes.len();
+    
+        // 1. Spatial Pass (Gates)
+        for i in 0..len {
+            let node = &self.nodes[i];
+            let a = self.nodes[node.source_indices[0] as usize].state;
+            let b = self.nodes[node.source_indices[1] as usize].state;
+        
+            self.gate_outs[i] = match node.gate_type {
+                GateType::XOR  => a ^ b,
+                GateType::NAND => (a & b) ^ 1,
+                GateType::OR   => a | b,
+                GateType::AND  => a & b,
+                GateType::NOR  => (a | b) ^ 1,
+            };
+        }
+
+        // 2. Temporal Pass (Synapses & Audit)
+        for i in 0..len {
+            let gate_out = self.gate_outs[i] as u64;
+            let node = &mut self.nodes[i];
+            let mut flux = 0u64;
+
+            for j in 0..MAX_SYNAPSES {
+                node.delay_masks[j] |= gate_out << node.delays[j];
+                flux ^= node.delay_masks[j] & 1;
+                node.delay_masks[j] >>= 1;
+            }
+
+            // Apply flip and update HealthAudit live
+            if (flux & 1) == 1 {
+                node.state ^= 1;
+                self.audit.mark_flip(i); // O(1) update
+            }
+        }
+    
+        // Finalize the tick
+        self.audit.add_tick();
+    }
+
+    // Generate bit_count bits by repeatedly ticking the lattice.
+    // Returns a Vec<u8> where each element is 0 or 1.
+    pub fn generate_bits(&mut self, bit_count: usize) -> Vec<u8> {
+        let mut out = vec![0u8; self.outputs.len()];
+        let mut bits = Vec::with_capacity(bit_count);
+        while bits.len() < bit_count {
+            self.tick(&mut out);
+            // append all output bits until we reach bit_count
+            for &b in out.iter() {
+                bits.push(b);
+                if bits.len() == bit_count {
+                    break;
+                }
+            }
+        }
+        bits
+    }
+
+    pub fn save_to_file(&self, path: &str) -> std::io::Result<()> {
+        let data = bincode::serialize(self)
+            .expect("Failed to serialize RuntimeIon");
+        std::fs::write(path, data)
+    }
+
+    pub fn load_from_file(path: &str) -> std::io::Result<Self> {
+        let data = std::fs::read(path)?;
+        let model: RuntimeIon = bincode::deserialize(&data)
+            .expect("Failed to deserialize RuntimeIon");
+        // sanity checks
+        assert_eq!(model.meta.node_count as usize, model.nodes.len());
+        assert_eq!(model.meta.output_count as usize, model.outputs.len());
+        assert_eq!(model.meta.max_synapses as usize, MAX_SYNAPSES);
+        assert_eq!(model.meta.max_delay as usize, MAX_DELAY as usize);
+        Ok(model)
+    }
+}
+
+impl HealthAudit {
+    pub fn new(node_count: usize) -> Self {
+        Self {
+            flip_counts: vec![0; node_count],
+            total_ticks: 0,
+        }
+    }
+
+    #[inline]
+    pub fn mark_flip(&mut self, node_idx: usize) {
+        self.flip_counts[node_idx] += 1;
+    }
+    
+    #[inline]
+    pub fn add_tick(&mut self) {
+        self.total_ticks += 1;
+    }
+    
+    pub fn report(&self) -> u64 {
+        let n = self.flip_counts.len();
+        if self.total_ticks == 0 {
+            println!("HealthAudit: No ticks recorded yet.");
+            return n as u64;
+        }
+        let mut thermal: Vec<f64> = self.flip_counts.iter()
+            .map(|&c| (c as f64 / self.total_ticks as f64) * 100.0)
+            .collect();
+        thermal.sort_by(|a, b| a.total_cmp(b));
+        let dead = thermal.iter().filter(|&&r| r < 0.01).count();        
+        //println!("--- Thermal Equilibrium Report ---");
+        //if let (Some(cold), Some(med), Some(hot)) = (thermal.first(), thermal.get(n / 2), thermal.last()) {
+        //    println!("C {:.2}% M: {:.2}% H: {:.2}% -- Stuck Gates {} / {}", cold, med, hot, dead, n);
+        //}
+        dead as u64
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct IonHive {
+    pub engines: Vec<RuntimeIon>, // always 32 engines
+}
+
+impl IonHive {
+    pub fn new_hive(target_nodes: usize, full_gate_set: bool) -> Self {
+        let mut engines = Vec::with_capacity(32);
+
+        for _ in 0..32 {
+            let engine = loop {                
+                let mut model = RuntimeIon::new(target_nodes, false, 0);
+                model.generate_bits(100_000);
+                let dead = model.audit.report();
+
+                if dead > 0 {
+                    model.migrate_zombies(full_gate_set);
+                    model.audit = HealthAudit::new(model.nodes.len());
+                    model.generate_bits(100_000);
+
+                    let dead_after = model.audit.report();
+
+                    if dead_after > 0 {
+                        // still dead → discard and retry
+                        continue;
+                    }
+                }
+                break model;
+            };
+
+            engines.push(engine);
+        }
+
+        IonHive { engines }
+    }
+	
+   /// Generate `bit_count` bits by rotating across all 32 engines.
+    /// Never draws more than 64 bits from any engine per tick.
+    pub fn generate_bits(&mut self, bit_count: usize) -> Vec<u8> {
+        let mut bits = Vec::with_capacity(bit_count);
+        let mut engine_index = 0;
+
+        while bits.len() < bit_count {
+            let engine = &mut self.engines[engine_index];
+
+            // pull up to 64 bits from this engine
+            let chunk = engine.generate_bits(64);
+
+            for b in chunk {
+                bits.push(b);
+                if bits.len() == bit_count {
+                    break;
+                }
+            }
+
+            // rotate to next engine
+            engine_index = (engine_index + 1) % self.engines.len();
+        }
+
+        bits
+    }
+
+	pub fn randomized_generate_bits(&mut self, bit_count: usize) -> Vec<u8> {
+        let mut rng = rand::thread_rng();
+        self.randomized_generate_bits_internal(bit_count, &mut rng)
+    }
+
+    fn randomized_generate_bits_internal<R: Rng>(
+        &mut self,
+        bit_count: usize,
+        rng: &mut R,
+    ) -> Vec<u8> {
+        let mut out = Vec::with_capacity(bit_count);
+
+        if self.engines.is_empty() {
+            return out;
+        }
+
+        let model_count = self.engines.len();
+        let nodes_per_model = self.engines[0].nodes.len();
+        let total_gates = model_count * nodes_per_model;
+
+        // flat index space: 0..total_gates
+        let mut indices: Vec<usize> = (0..total_gates).collect();
+
+        while out.len() < bit_count {
+            // 1. advance temporal state of the entire hive
+            for model in &mut self.engines {
+                model.tick_no_out();
+            }
+
+            // 2. randomize gate visit order across the whole hive
+            indices.shuffle(rng);
+
+            // 3. harvest in that randomized order
+            for &flat_idx in &indices {
+                if out.len() >= bit_count {
+                    break;
+                }
+
+                let model_idx = flat_idx / nodes_per_model;
+                let node_idx  = flat_idx % nodes_per_model;
+
+                let bit = self.engines[model_idx].nodes[node_idx].state;
+                out.push(bit);
+            }
+        }
+
+        out
+    }
+	
+    pub fn save_to_file(&self, path: &str) -> std::io::Result<()> {
+        let data = bincode::serialize(self)
+            .expect("Failed to serialize IonHive");
+        std::fs::write(path, data)
+    }
+
+    pub fn load_from_file(path: &str) -> std::io::Result<Self> {
+        let data = std::fs::read(path)?;
+        let hive: IonHive = bincode::deserialize(&data)
+            .expect("Failed to deserialize IonHive");
+
+        // sanity check: must have 32 engines
+        assert_eq!(hive.engines.len(), 32);
+
+        Ok(hive)
+    }
+}
+
+#[derive(Clone)]
+pub struct TestDataCounterNAMean {
+    l:             String,
+    filename:      String,
+	NAFilename:    String,
+    toConsole:     bool,
+    toFile:        bool,
+    interval:      usize,
+    threadID:      usize,
+    sampleID:      usize,
+    NA:            usize,  
+    NAWindow:      usize,	
+    totalCount:    usize,
+    validCount:    usize,
+    lowest:        f64,
+    highest:       f64,
+    failed:        usize,
+    passed:        usize,
+    lowMeanSum:    f64,
+    lowMean:       f64,
+    meanFailed:    usize,
+    meanPassed:    usize,
+    meanSum:       f64,
+    mean:          f64,
+    lastP:         f64,
+}
+
+impl TestDataCounterNAMean {
+    pub fn new(
+        l: &str, threadID: usize, sampleID: usize,
+        toConsole: bool, interval: usize,
+        toFile: bool,
+		engine: &str
+    ) -> Self {
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis();
+
+        let filename = format!("w:\\{}_{}_{}_{}-{}.csv", ts, threadID, sampleID, l, engine);
+		let NAFilename = format!("w:\\NA_Window_{}_{}_{}_{}-{}.csv", ts, threadID, sampleID, l, engine);
+		
+        let s = Self {
+            l:             l.to_string(),
+            filename,
+			NAFilename,
+            toConsole,
+            toFile,
+            interval,            
+            threadID,
+            sampleID,
+            NA:            0,
+			NAWindow:      0,
+            totalCount:    0,
+            validCount:    0,
+            lowest:        f64::INFINITY,
+            highest:       f64::NEG_INFINITY,
+            failed:        0,
+            passed:        0,
+            lowMeanSum:    0.0,
+            lowMean:       0.0,
+            meanFailed:    0,
+            meanPassed:    0,
+            meanSum:       0.0,
+            mean:          0.0,
+            lastP:         0.0,            
+        };
+
+        if s.toFile { s.resetFile(); }
+
+        // return self constructor
+        s
+    }
+	
+    pub fn incNA(&mut self) {
+        self.NA += 1;
+		self.NAWindow +=1;
+        self.totalCount += 1;
+
+        if self.interval > 0 {
+            if self.totalCount % self.interval == 0 { self.consoleOut(); }
+        }
+
+        if self.toFile { self.fileOut(); }                
+    }
+
+    pub fn inc(&mut self, p: f64, mean: f64) {
+        self.validCount += 1;
+        self.totalCount += 1;
+        self.lastP       = p;
+        if p < self.lowest  { self.lowest  = p; }
+        if p > self.highest { self.highest = p; }
+        if p < 0.01 { self.failed += 1; }
+        else        { self.passed += 1; }
+        self.lowMeanSum += p;
+        self.lowMean = self.lowMeanSum / self.validCount as f64;
+        if mean < 0.01 { self.meanFailed += 1; }
+        else           { self.meanPassed += 1; }
+        self.meanSum += mean;
+        self.mean = self.meanSum / self.validCount as f64;
+
+        if self.interval > 0 {
+            if self.totalCount % self.interval == 0 { self.consoleOut(); }
+        }
+
+        if self.toFile { self.fileOut(); }                
+    }
+    
+    pub fn resetFile(&self) {
+        let mut file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&self.filename)
+            .unwrap();
+
+        writeln!(
+            file,
+            "ts,label,threadID,sampleID,totalCount,NA,validCount,lowest,highest,failed,passed,lowMeanSum,lowMean,meanFailed,meanPassed,meanSum,mean,p"
+        )
+        .unwrap();
+
+        let mut NAFile = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&self.NAFilename)
+            .unwrap();
+			
+		writeln!(
+            NAFile,
+            "ts,label,threadID,sampleID,NA,NAGap,meanNAGap"
+        )
+        .unwrap();
+    }
+
+	pub fn deleteFile(&self) {
+        std::fs::remove_file(&self.filename);
+    }
+
+    pub fn consoleOut(&self) {
+        println!(
+            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+            self.l,    self.threadID, self.sampleID, 
+            self.totalCount, self.NA, self.validCount,
+            self.lowest, self.highest,
+            self.failed, self.passed, self.lowMeanSum, self.lowMean,
+            self.meanFailed, self.meanPassed, self.meanSum, self.mean,
+            self.lastP,
+        );
+    }
+
+    pub fn fileOut(&self) {
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.filename)
+            .unwrap();
+
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis();    
+
+        writeln!(
+            file,
+            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+            ts,
+            self.l, self.threadID, self.sampleID, 
+            self.totalCount, self.NA, self.validCount,
+            self.lowest, self.highest,
+            self.failed, self.passed, self.lowMeanSum, self.lowMean,
+            self.meanFailed, self.meanPassed, self.meanSum, self.mean,
+            self.lastP,
+        );
+		
+		if self.totalCount % 50 == 0 {
+		    let mut NAFile = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&self.NAFilename)
+                .unwrap();
+		
+		    // "ts,label,threadID,sampleID,NA,NAGap,meanNAGap"
+            let NAGap = 50 / self.NAWindow;
+		    let meanGap = self.totalCount / self.NA;
+			
+		    writeln!(
+                NAFile,
+                "{},{},{},{},{},{},{}",
+                ts,
+                self.l, self.threadID, self.sampleID, 
+                self.NA, NAGap, meanGap
+			);
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct TestDataCounterPMean {
+    l:             String,
+    filename:      String,
+    toConsole:     bool,
+    toFile:        bool,
+    interval:      usize,
+    threadID:      usize,
+    sampleID:      usize,
+    totalCount:    usize,
+    lowest:        f64,
+    highest:       f64,
+    failed:        usize,
+    passed:        usize,
+    lowMeanSum:    f64,
+    lowMean:       f64,
+    meanFailed:    usize,
+    meanPassed:    usize,
+    meanSum:       f64,
+    mean:          f64,
+    lastP:         f64,
+}
+impl TestDataCounterPMean {
+    pub fn new(
+        l: &str, threadID: usize, sampleID: usize,
+        toConsole: bool, interval: usize,
+        toFile: bool,
+		engine: &str
+    ) -> Self {
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis();
+
+        let filename = format!("w:\\{}_{}_{}_{}-{}.csv", ts, threadID, sampleID, l, engine);
+        let s = Self {
+            l:             l.to_string(),
+            filename,
+            toConsole,
+            toFile,
+            interval,            
+            threadID,
+            sampleID,
+            totalCount:    0,
+            lowest:        f64::INFINITY,
+            highest:       f64::NEG_INFINITY,
+            failed:        0,
+            passed:        0,
+            lowMeanSum:    0.0,
+            lowMean:       0.0,
+            meanFailed:    0,
+            meanPassed:    0,
+            meanSum:       0.0,
+            mean:          0.0,
+            lastP:         0.0,            
+        };
+
+        if s.toFile { s.resetFile(); }
+
+        // return self constructor
+        s
+    }
+    pub fn inc(&mut self, p: f64, mean: f64) {
+        self.totalCount += 1;
+        self.lastP       = p;
+        if p < self.lowest  { self.lowest  = p; }
+        if p > self.highest { self.highest = p; }
+        if p < 0.01 { self.failed += 1; }
+        else        { self.passed += 1; }
+        self.lowMeanSum += p;
+        self.lowMean = self.lowMeanSum / self.totalCount as f64;
+        if mean < 0.01 { self.meanFailed += 1; }
+        else           { self.meanPassed += 1; }
+        self.meanSum += mean;
+        self.mean = self.meanSum / self.totalCount as f64;
+
+        if self.interval > 0 {
+            if self.totalCount % self.interval == 0 { self.consoleOut(); }
+        }
+
+        if self.toFile { self.fileOut(); }                
+    }
+    pub fn resetFile(&self) {
+        let mut file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&self.filename)
+            .unwrap();
+
+        writeln!(
+            file,
+            "ts,label,threadID,sampleID,totalCount,lowest,highest,failed,passed,lowMeanSum,lowMean,meanFailed,meanPassed,meanSum,mean,p"
+        )
+        .unwrap();        
+
+    }
+    pub fn consoleOut(&self) {
+        println!(
+            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+            self.l,    self.threadID, self.sampleID, 
+            self.totalCount,
+            self.lowest, self.highest,
+            self.failed, self.passed, self.lowMeanSum, self.lowMean,
+            self.meanFailed, self.meanPassed, self.meanSum, self.mean,
+            self.lastP,
+        );
+    }
+
+    pub fn fileOut(&self) {
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.filename)
+            .unwrap();
+
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis();
+
+        writeln!(
+            file,
+            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+            ts,
+            self.l, self.threadID, self.sampleID, 
+            self.totalCount,
+            self.lowest, self.highest,
+            self.failed, self.passed, self.lowMeanSum, self.lowMean,
+            self.meanFailed, self.meanPassed, self.meanSum, self.mean,
+            self.lastP,
+        );
+    }
+}
+
+#[derive(Clone)]
+pub struct TestDataCounterP {
+    l:             String,
+    filename:      String,
+    toConsole:     bool,
+    toFile:        bool,
+    interval:      usize,
+    threadID:      usize,
+    sampleID:      usize,
+    totalCount:    usize,
+    lowest:        f64,
+    highest:       f64,
+    failed:        usize,
+    passed:        usize,
+    pSum:          f64,
+    pMean:         f64,
+    lastP:         f64,
+}
+impl TestDataCounterP {
+    pub fn new(
+        l: &str, threadID: usize, sampleID: usize,
+        toConsole: bool, interval: usize,
+        toFile: bool,
+		engine: &str
+    ) -> Self {
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis();
+
+        let filename = format!("w:\\{}_{}_{}_{}.csv", ts, threadID, sampleID, l);
+
+        let s = Self {
+            l:             l.to_string(),
+            filename,
+            toConsole,
+            toFile,
+            interval,            
+            threadID,
+            sampleID,
+            totalCount:    0,
+            lowest:        f64::INFINITY,
+            highest:       f64::NEG_INFINITY,
+            failed:        0,
+            passed:        0,
+            pSum:          0.0,
+            pMean:         0.0,
+            lastP:         0.0,            
+        };
+
+        if s.toFile { s.resetFile(); }
+
+        // return self constructor
+        s
+    }
+
+    pub fn inc(&mut self, p: f64) {                
+        self.totalCount += 1;
+        self.lastP       = p;
+
+        if p < self.lowest  { self.lowest  = p; }
+        if p > self.highest { self.highest = p; }
+        if p < 0.01 { self.failed += 1; }
+        else        { self.passed += 1; }
+        self.pSum += p;
+        self.pMean = self.pSum / self.totalCount as f64;
+
+        if self.interval > 0 {
+            if self.totalCount % self.interval == 0 { self.consoleOut(); }
+        }
+
+        if self.toFile == true { self.fileOut(); }    
+    }
+
+    pub fn resetFile(&self) {
+        let mut file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&self.filename)
+            .unwrap();
+
+        writeln!(
+            file,
+            "ts,label,threadID,sampleID,totalCount,lowest,highest,failed,passed,meanSum,mean,p"
+        )
+        .unwrap();        
+
+    }
+    pub fn consoleOut(&self) {
+        println!(
+            "{},{},{},{},{},{},{},{},{},{},{}",
+            self.l, self.threadID, self.sampleID, 
+            self.totalCount,
+            self.lowest, self.highest,
+            self.failed, self.passed,
+            self.pSum, self.pMean, self.lastP,
+        );
+    }
+
+    pub fn fileOut(&self) {
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.filename)
+            .unwrap();
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis();
+
+        writeln!(
+            file,
+            "{},{},{},{},{},{},{},{},{},{},{},{}",
+            ts,
+            self.l, self.threadID, self.sampleID, 
+            self.totalCount, 
+            self.lowest, self.highest,
+            self.failed, self.passed,
+            self.pSum, self.pMean, self.lastP,
+        );
+    }
+}
+
+pub struct TestSuite {
+    pub sfp:  TestDataCounterP,
+    pub nap:  TestDataCounterP,
+    pub bfp:  TestDataCounterP,
+    pub frp:  TestDataCounterP,
+    pub nfp:  TestDataCounterP,
+    pub nrp:  TestDataCounterP,
+    pub nlp:  TestDataCounterP,
+    pub nbp:  TestDataCounterP,
+    pub s1p:  TestDataCounterP,
+    pub s2p:  TestDataCounterP,
+    pub dfp:  TestDataCounterP,
+    pub n9p:  TestDataCounterP,
+    pub n10p: TestDataCounterP,
+    pub nop:  TestDataCounterP,
+    pub ump:  TestDataCounterP,
+    pub lcp:  TestDataCounterP,
+    pub gtp:  TestDataCounterP,
+    pub nmp:  TestDataCounterP,
+    pub cfp:  TestDataCounterP,
+    pub crp:  TestDataCounterP,
+    pub gep:  TestDataCounterP,
+    pub vcp:  TestDataCounterP,
+    pub ncp:  TestDataCounterP,
+    pub mbp:  TestDataCounterP,
+    pub scp:  TestDataCounterPMean,
+    pub qcp:  TestDataCounterPMean,
+    pub rep:  TestDataCounterNAMean,
+    pub rvp:  TestDataCounterNAMean,
+}
+
+impl TestSuite {
+    pub fn new(threadID: usize, sampleID: usize, engine: String) -> Self {
+        Self {
+            sfp:  TestDataCounterP::new("3DRandomWalk",            threadID, sampleID, true, 50, true, &engine),
+            nap:  TestDataCounterP::new("NIST_ApproximateEntropy", threadID, sampleID, true, 50, true, &engine),
+            bfp:  TestDataCounterP::new("ByteFrequency",           threadID, sampleID, true, 50, true, &engine),
+            frp:  TestDataCounterP::new("NIST_ByteFrequency",      threadID, sampleID, true, 50, true, &engine),
+            nfp:  TestDataCounterP::new("NIST_BlockFrequency",     threadID, sampleID, true, 50, true, &engine),
+            nrp:  TestDataCounterP::new("NIST_Runs",               threadID, sampleID, true, 50, true, &engine),
+            nlp:  TestDataCounterP::new("NIST_LongestRunOfOnes",   threadID, sampleID, true, 50, true, &engine),
+            nbp:  TestDataCounterP::new("NIST_BinaryMatrix",       threadID, sampleID, true, 50, true, &engine),
+            s1p:  TestDataCounterP::new("NIST_SerialP1",           threadID, sampleID, true, 50, true, &engine),
+            s2p:  TestDataCounterP::new("NIST_SerialP2",           threadID, sampleID, true, 50, true, &engine),
+            dfp:  TestDataCounterP::new("NIST_DFTSpectral",        threadID, sampleID, true, 50, true, &engine),
+            n9p:  TestDataCounterP::new("NIST_Non-Overlapping9",   threadID, sampleID, true, 50, true, &engine),
+            n10p: TestDataCounterP::new("NIST_Non-Overlapping10",  threadID, sampleID, true, 50, true, &engine),
+            nop:  TestDataCounterP::new("NIST_Overlapping",        threadID, sampleID, true, 50, true, &engine),
+            ump:  TestDataCounterP::new("NIST_UniversalMaurer",    threadID, sampleID, true, 50, true, &engine),
+            lcp:  TestDataCounterP::new("NIST_LinearComplexity",   threadID, sampleID, true, 50, true, &engine),
+            gtp:  TestDataCounterP::new("ByteGap",                 threadID, sampleID, true, 50, true, &engine),
+            nmp:  TestDataCounterP::new("NibbleMarkov",            threadID, sampleID, true, 50, true, &engine),
+            cfp:  TestDataCounterP::new("NIST_CumulativeSumFwd",   threadID, sampleID, true, 50, true, &engine),
+            crp:  TestDataCounterP::new("NIST_CumulativeSumRev",   threadID, sampleID, true, 50, true, &engine),
+            gep:  TestDataCounterP::new("GlobalEntropy",           threadID, sampleID, true, 50, true, &engine),
+            vcp:  TestDataCounterP::new("VoronoiCell",             threadID, sampleID, true, 50, true, &engine),
+            ncp:  TestDataCounterP::new("NCDHistory",              threadID, sampleID, true, 50, true, &engine),
+            mbp:  TestDataCounterP::new("UniversalMaurerByte",     threadID, sampleID, true, 50, true, &engine),
+            scp:  TestDataCounterPMean::new("EtropySurfaceCurvature", threadID, sampleID, true, 50, true, &engine),
+            qcp:  TestDataCounterPMean::new("QuadraticCharacter",     threadID, sampleID, true, 50, true, &engine),
+            rep:  TestDataCounterNAMean::new("NIST_RandomExcursion",        threadID, sampleID, false, 0, true, &engine),
+            rvp:  TestDataCounterNAMean::new("NIST_RandomExcursionVariant", threadID, sampleID, false, 0, true, &engine),
+        }
+    }
+}
+
+pub fn run_tests(stream: &mut BitByteStream, suite: &mut TestSuite) -> bool {
+    let n = stream.bit_len;    
+    if n < 1_000_000 {
+        // too small for research-grade linear complexity
+        return false; 
+    }    
+
+    //println!("3D random walk radius test");
+    suite.sfp.inc(random_walk_radius_test(stream));
+	    
+    //println!("approximate entropy");
+    suite.nap.inc(nist_approximate_entropy_test(stream));
+
+    //println!("byte frequency test");
+    suite.bfp.inc(byte_frequency_test(stream));
+	
+    //println!("frequency test");
+    suite.frp.inc(nist_frequency_test(stream));
+    
+    //println!("block frequency test");
+    suite.nfp.inc(nist_block_frequency_test(stream));
+    
+    //println!("runs test");
+    suite.nrp.inc(nist_runs_test(stream));
+    
+    //println!("longest run of ones test");
+    suite.nlp.inc(nist_longest_run_of_ones_test(stream));
+    
+    //println!("binary matrix rank test");
+    suite.nbp.inc(nist_binary_matrix_rank_test(stream));
+    
+    //println!("serial test 1");
+    suite.s1p.inc(nist_serial_p1_test(stream));
+    
+    //println!("serial test 2");
+    suite.s2p.inc(nist_serial_p2_test(stream));
+    
+    //println!("NIST dft spectral test");
+    suite.dfp.inc(nist_dft_spectral_test(stream));
+    
+    //println!("non-overlapping template 9 test");
+    suite.n9p.inc(nist_non_overlapping_template_9_test(stream));
+    
+    //println!("non-overlapping template 10 test");
+    suite.n10p.inc(nist_non_overlapping_template_10_test(stream));
+    
+    //println!("overlapping template test");
+    suite.nop.inc(nist_overlapping_template_test(stream));
+    
+    //println!("universal maurer test");
+    suite.ump.inc(nist_universal_maurer_test(stream));
+    
+    //println!("linear complexity test");
+    suite.lcp.inc(nist_linear_complexity_test(stream));
+    
+    //println!("gap test");
+    suite.gtp.inc(gap_test(stream));
+    
+    //println!("nibble markov test");
+    suite.nmp.inc(nibble_markov_test(stream));
+    
+    //println!("NIST cumulative sum test");
+    suite.cfp.inc(cusum_forward_test(stream));    
+    suite.crp.inc(cusum_reverse_test(stream));
+    
+	//this one returns 8-bit entropy values not p-values, use the general P for now...
+	//doesn't get logged it's an immediate health check
+    //a high the number better... will have to build a custom tracker for this one
+    let p = entropy_global_test(stream);
+	//println!("entropy global stability test");
+    suite.gep.inc(p);        
+    
+    //println!("voronoi cell volume test");
+	suite.vcp.inc(voronoi_cell_volume_test_fast(stream));
+    
+    //println!("NCD history test");
+    suite.ncp.inc(NCD_test(stream));
+    
+	//println!("maurer universal - BYTE test");
+    suite.mbp.inc(maurer_universal_byte_test(stream));
+    
+	//println!("entropy surface curvature test");
+	//returns p and mean
+    let (eP, emP) = entropy_surface_curvature_pvalue(stream);
+	suite.scp.inc(eP, emP);
+    
+	let panels = [
+        // 2-byte words
+        (31397, 2),
+        (32749, 2),
+        (65521, 2),
+        (65537, 2),
+
+        // 3-byte words
+        (174763, 3),
+        (999431, 3),
+        (1048583, 3),
+        (1677721, 3),
+        
+        // 4-byte words
+        (2147483647, 4),        
+        (3221225473, 4),
+        (4294967087, 4),
+        (4294967291, 4),
+    ];
+	
+	let (qP, qmP) = quadratic_character_multi_panel_test(stream, &panels);
+	suite.qcp.inc(qP,qmP);
+
+    let raw1 = nist_random_excursions_test(stream);
+    let result1 = aggregate_excursion_panel(raw1);
+    if result1.valid_states == 0 {
+		suite.rep.incNA();
+	} else {
+		suite.rep.inc(result1.min_p, result1.mean_p);
+	}
+
+    let raw2 = nist_random_excursions_variant_test(stream);
+    let result2 = aggregate_excursion_panel(raw2);
+    if result2.valid_states == 0 {
+		suite.rvp.incNA();
+	} else {
+		suite.rvp.inc(result2.min_p, result2.mean_p);
+	}
+
+    true
+}
+
+pub struct Blake2xDrbg {
+    seed: [u8; 32],
+    counter: u64,
+}
+
+impl Blake2xDrbg {
+    pub fn new(seed: [u8; 32]) -> Self {
+        Self { seed, counter: 0 }
+    }
+
+    pub fn generate_bytes(&mut self, len: usize) -> Vec<u8> {
+        let mut out = Vec::with_capacity(len);
+
+        while out.len() < len {
+            let mut hasher = Blake2b512::new();
+            
+            // Disambiguate by calling the trait method directly
+            Blake2Digest::update(&mut hasher, &self.seed);
+            Blake2Digest::update(&mut hasher, &self.counter.to_le_bytes());
+            
+            let block = hasher.finalize();
+            out.extend_from_slice(&block);
+            
+            // Using wrapping_add is good practice for DRBG counters 
+            // to avoid panics on overflow during long search runs.
+            self.counter = self.counter.wrapping_add(1);
+        }
+
+        out.truncate(len);
+        out
+    }
+}
+
+pub struct Shake256Xof {
+    // Correct way to denote a trait object with a 'static lifetime
+    reader: Box<dyn XofReader>, 
+}
+
+impl Shake256Xof {
+    pub fn from_seed(seed: &[u8]) -> Self {
+        let mut hasher = Shake256::default();
+        hasher.update(seed);
+        
+        // finalize_xof() returns a reader. To store it as 'dyn', we Box it.
+        let reader = hasher.finalize_xof();
+        
+        Self { 
+            reader: Box::new(reader) 
+        }
+    }
+
+    pub fn generate_bytes(&mut self, len: usize) -> Vec<u8> {
+        let mut buf = vec![0u8; len];
+        // XofReader trait provides the read method
+        self.reader.read(&mut buf);
+        buf
+    }
+}
+
+fn generate_random_bytes(rng: &mut ChaCha20Rng, len: usize) -> Vec<u8> {
+    let mut buf = vec![0u8; len];
+    rng.fill_bytes(&mut buf);
+    buf
+}
+
+fn generate_aes_ctr_bytes(cipher: &mut AesCtr, len: usize) -> Vec<u8> {
+    let mut buf = vec![0u8; len];
+    cipher.apply_keystream(&mut buf);
+    buf
+}
+
+pub fn generate_blake2_bytes(len: usize) -> Vec<u8> {
+    let mut out = Vec::with_capacity(len);
+    let mut counter: u64 = 0;
+    let mut seed = [0u8; 32];
+    let mut base_hasher = Blake2b512::new();
+    
+	rand::thread_rng().fill_bytes(&mut seed);
+    Blake2Digest::update(&mut base_hasher, &seed);
+
+    while out.len() < len {        
+        let mut hasher = base_hasher.clone();        
+        Blake2Digest::update(&mut hasher, &counter.to_le_bytes());
+        let block = hasher.finalize();
+        out.extend_from_slice(&block);
+        
+        counter += 1;
+    }
+
+    out.truncate(len);
+    out
+}
+
+pub fn generate_sha3_512_bytes(len: usize) -> Vec<u8> {
+    let mut out = Vec::with_capacity(len);
+    let mut counter: u64 = 0;
+
+    let mut seed = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut seed);
+
+    let mut base_hasher = Sha3_512::new();
+    Sha3Digest::update(&mut base_hasher, &seed);
+
+    while out.len() < len {
+        let mut hasher = base_hasher.clone();
+        Sha3Digest::update(&mut hasher, &counter.to_le_bytes());
+        
+        let block = hasher.finalize();
+        out.extend_from_slice(&block);
+        
+        counter += 1;
+    }
+
+    out.truncate(len);
+    out
+}
+
+fn main() {
+	let pop_counter = Arc::new(AtomicUsize::new(0));
+	
+	// Spawn 48 worker threads
+    let mut handles = Vec::new();
+    for thread_id in 0..48 {
+        let counter = Arc::clone(&pop_counter);        
+
+        let handle = thread::spawn(move || {
+            loop {
+                let sample_index = counter.fetch_add(1, Ordering::SeqCst);
+                let mut model = IonHive::new_hive(64, true);
+
+                let snapshot_path = format!(
+                    "w:/snapshots/model_hive_2048_t{}_i{}.bin",                    
+                    thread_id,
+                    sample_index,
+                );
+                model.save_to_file(&snapshot_path).ok();
+                
+				let engine = format!(
+                    "model_hive_2048_t{}_i{}",                    
+                    thread_id,
+                    sample_index,
+                );
+				
+     			let mut suite1 = TestSuite::new(thread_id, sample_index, engine);
+						                        
+                for _ in 0..600 {
+                    let bits = model.randomized_generate_bits(1_048_576);
+                    let mut stream = BitByteStream::new_from_bits(bits);
+                    run_tests(&mut stream, &mut suite1);							
+                }
+            };
+        });
+
+        handles.push(handle);
+    }
+
+    // Wait for all threads to finish
+    for h in handles {
+        h.join().unwrap();
+    }
+
+    println!("All models processed.");
+}
