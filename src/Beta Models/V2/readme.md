@@ -1,4 +1,4 @@
-The V2 Engine reseach for the Ion Model are contained in here.
+The V2 Engine reseach sources for the Ion Model are contained in here.
 
 This is a prelim debug series that has taken months to work out, test and vet.
 
