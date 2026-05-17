@@ -1057,13 +1057,13 @@ What is the status?
 ### Path B – Engineering “neural networks” (ANNs, deep learning, LLMs)
 
 What it is?
-Matrix multiplications and activation functions (ReLU, tanh, sigmoid) plus forward and/or back propogation.
+- Matrix multiplications and activation functions (ReLU, tanh, sigmoid) plus forward and/or back propogation.
 
 What did it achieve?
-Huge practical success: vision, language, speech, games, coding, etc.
+- Huge practical success: vision, language, speech, games, coding, etc.
 
 What did it miss?
-Biological realism, spike timing, dendritic computation, physical grounding.
+- Biological realism, spike timing, dendritic computation, physical grounding.
 
 What is the status?
 - Dominant, powerful, but resource‑exhaustive and conceptually far from real neurons. GPU‑hungry, RAM‑hungry, centralized, expensive, high barrier to entry, distorts hardware markets.
