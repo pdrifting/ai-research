@@ -18,7 +18,7 @@ All original development was performed on:
 - Windows 10
 - AMD Threadripper 3960X (Zen 2)
 - 128 GB of DDR4 RAM
-- Three MSDI 1050 Ti GPUs (4GB VRAM each)
+- Three MSI 1050 Ti GPUs (4GB VRAM each)
 
 Many projects will require modification to run on your system, especially if you are using different hardware, copilers and/or operating systems.
 - **Email:** github.projects@muskokatech.club
