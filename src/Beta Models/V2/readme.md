@@ -5,8 +5,8 @@ This is a prelim debug series that has taken months to work out, test and vet.
 The source code in here is meant purely for backups of that research, the code is not suited for lab tooling.
 
 1.  It is currently setup up to use a ram drive labelled w: in a windows 10 environment.
-2.  Currently configured for randomized gate harvesting.
-3.  Meant for concpet reference only.
+2.  Currently configured for stepped or randomized gate harvesting from a clustered hive.
+3.  Meant for concept reference only.
 4.  You are welcome to tinker with the code.
 5.  Use at your own risk, it is thread configured to run 48 threads.
 6.  Not for typical desktop use.
