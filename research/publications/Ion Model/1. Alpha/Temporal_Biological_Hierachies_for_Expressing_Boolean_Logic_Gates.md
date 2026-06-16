@@ -11,7 +11,7 @@ The alpha engine takes a different approach.  Instead of forcing all logic into 
 The alpha model is intentionally simple but biologically flavored. It uses:
 
 - **Ion flux tables** to represent different synaptic effects (fire, slow, negate, absolute high, shunt).
-- **A membrane potential** (`soma_potential`) that integrates external flux and internal pumps.
+- **A membrane potential** ('soma_potential') that integrates external flux and internal pumps.
 - **A discrete state machine** to represent resting, firing, and refractory phases.
 - **Dendrites and synapses** as the structural substrate where logic is encoded.
 
@@ -26,7 +26,7 @@ The design goal is not to be biophysically accurate, but to show that:
 
 ### 3.1 Universal ion flux model
 
-The model defines a small, discrete set of synaptic “gate types”, each mapped to a fixed ion flux value:
+The model defines a small, discrete set of synaptic "gate types", each mapped to a fixed ion flux value:
 
 ```c
 static const float EXT_ION_FLUX[] = {
@@ -339,8 +339,8 @@ The process_neuron function:
 - Applies an internal pump (INT_PUMP_VALS) to slowly return the neuron toward resting potential.
 
 This is biologically inspired:
-- A firing neuron’s membrane potential is forced to the spike voltage
-- A refractory neuron’s membrane potential is forced to a minimum
+- A firing neuron's membrane potential is forced to the spike voltage
+- A refractory neuron's membrane potential is forced to a minimum
 - Only in resting/returning states does the soma integrate synaptic flux
 
 Represent a state‑dependent override system:
@@ -504,7 +504,7 @@ void process_neuron(Neuron* n) {
 
 ## 6. Generating spike‑based truth tables
 
-To evaluate each gate, the simulator constructs a neuron configured with the appropriate dendritic topology and synaptic gate types. Boolean inputs are applied by setting the is_active flags on the synapses belonging to the input dendrites. Some gates (XOR, XNOR) include an additional dendrite that activates only when both inputs are true, enabling composite logic.
+To evaluate each gate, the simulator constructs a neuron configured with the appropriate dendritic topology and synaptic gate types. Boolean inputs are applied by setting the 'is_active' flags on the synapses belonging to the input dendrites. Some gates (XOR, XNOR) include an additional dendrite that activates only when both inputs are true, enabling composite logic.
 
 A baseline excitatory drive is always applied on dendrite 0 for gates that require a resting bias (NAND, NOR, XNOR).
 
