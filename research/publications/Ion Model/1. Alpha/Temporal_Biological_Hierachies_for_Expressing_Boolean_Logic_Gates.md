@@ -839,7 +839,7 @@ Pros:
 - Most biologically realistic: Neurons fire whenever their internal state crosses threshold, just like real cortical tissue.
 - Rich emergent dynamics: Timing, interference, oscillations, and spontaneous patterns appear naturally.
 - Energy efficient and event‑driven: Nothing happens unless a spike happens.
-- Captures the “messiness” of real thought: Noise, drift, and instability are part of the computation.
+- Captures the messiness of real thought: Noise, drift, and instability are part of the computation.
 
 Cons:
 - Timing chaos: No global reference frame means spikes collide, drift, or miss each other.
@@ -1084,7 +1084,7 @@ What is the goal?
 What is the status?
 - Largely unexplored, high‑value, high‑difficulty, and crucial for future accessible, brainlike AI.
 
-*Alpha demonstrates that dendrites, synapses, and ion‑flux ‘weights’ can be configured to implement real logic gates using real physics. This operational result fills a gap left open in decades of dendritic computation literature, which has described nonlinear dendritic behavior but never produced a computational substrate capable of using it.*
+*Alpha demonstrates that dendrites, synapses, and ion‑flux weights can be configured to implement real logic gates using real physics. This operational result fills a gap left open in decades of dendritic computation literature, which has described nonlinear dendritic behavior but never produced a computational substrate capable of using it.*
 
 ---
 
@@ -1110,7 +1110,7 @@ For students who want to do real science, not just chase hype:
 This archive is not just a record of models. It is a map of where science stalled, where hype dominates, and where the unfinished work lies. If you want to do real, accessible science, start here.  The efforts in this repository are to revisit, rewaken, and make research accessible.
 
 There has been a collapse of STEM and a rise in abstraction that has been taking place for decades.  STEM education is collapsing globally despite efforts to attract more youth to it:
-- The “T” is the weakest link.
+- The "T" is the weakest link.
 - Teachers are disappearing.
 - Students are trained in tools, not systems.
 - Abstraction has replaced understanding.
@@ -1131,6 +1131,6 @@ It will come when we start thinking about:
 - efficiency, real‑time optimization
 - stewards of long‑term trajectories
 
-We are a long way from any of these. Even the most comprehensive dendritic computation reviews, such as the Annual Review of Neuroscience article by London & Häusser (2005), conclude with a ‘wish list’ of unanswered questions. These works identify the nonlinear, compartmentalized, and computationally rich properties of dendrites, but they provide no operational models, no circuit frameworks, and no mechanisms for chaining or reasoning. The roadmap they outline remains untraveled because the field lacks a computational substrate capable of expressing dendritic logic. This repository begins where those roadmaps end.
+We are a long way from any of these. Even the most comprehensive dendritic computation reviews, such as the Annual Review of Neuroscience article by London & Häusser (2005), conclude with a "wish list" of unanswered questions. These works identify the nonlinear, compartmentalized, and computationally rich properties of dendrites, but they provide no operational models, no circuit frameworks, and no mechanisms for chaining or reasoning. The roadmap they outline remains untraveled because the field lacks a computational substrate capable of expressing dendritic logic. This repository begins where those roadmaps end.
 
 
